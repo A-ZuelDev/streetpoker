@@ -5,11 +5,16 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+*.egg-info/
 
 # Node
 node_modules/
 dist/
 coverage/
+*.tsbuildinfo
 
 # Environment
 .env
@@ -24,6 +29,7 @@ Thumbs.db
 # Playwright
 test-results/
 playwright-report/
+.playwright/
 
 # Logs
 *.log
