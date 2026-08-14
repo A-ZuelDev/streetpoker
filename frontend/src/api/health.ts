@@ -8,10 +8,14 @@ const healthResponseSchema = z.object({
 
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
+export function buildHealthUrl(apiBaseUrl: string): string {
+  return `${apiBaseUrl.replace(/\/+$/, '')}/health`;
+}
+
 export async function fetchHealth(
   signal?: AbortSignal,
 ): Promise<HealthResponse> {
-  const response = await fetch(`${environment.VITE_API_BASE_URL}/health`, {
+  const response = await fetch(buildHealthUrl(environment.VITE_API_BASE_URL), {
     signal: signal ?? null,
   });
 

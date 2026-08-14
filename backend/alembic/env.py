@@ -5,13 +5,17 @@ from sqlalchemy import engine_from_config, pool
 
 from streetpoker.config import get_settings
 from streetpoker.db.base import Base
+from streetpoker.db.migrations import escape_alembic_config_value
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", get_settings().database_url)
+config.set_main_option(
+    "sqlalchemy.url",
+    escape_alembic_config_value(get_settings().database_url),
+)
 target_metadata = Base.metadata
 
 
