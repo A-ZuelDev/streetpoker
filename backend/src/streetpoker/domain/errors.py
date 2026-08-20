@@ -111,3 +111,102 @@ class ButtonError(TableError):
 
 class NoEligibleButtonSeatError(ButtonError):
     """Raised when no seated player is eligible to receive the button."""
+
+
+class BettingRoundError(PokerDomainError):
+    """Base class for expected betting-round failures."""
+
+
+class InvalidBettingRoundStateError(BettingRoundError):
+    """Raised when betting-round construction or state is invalid."""
+
+
+class InvalidMinimumBetError(InvalidBettingRoundStateError):
+    """Raised when a betting round receives an invalid minimum bet."""
+
+
+class InvalidBettingParticipantError(InvalidBettingRoundStateError):
+    """Raised when a betting-round participant is invalid."""
+
+
+class DuplicateBettingPlayerError(InvalidBettingParticipantError):
+    """Raised when a player appears more than once in a betting round."""
+
+
+class DuplicateBettingSeatError(InvalidBettingParticipantError):
+    """Raised when a seat appears more than once in a betting round."""
+
+
+class PlayerNotInBettingRoundError(BettingRoundError):
+    """Raised when a betting action references a nonparticipant."""
+
+    def __init__(self, *, player_id: str) -> None:
+        self.player_id = player_id
+        super().__init__(f"Player {player_id!r} is not in this betting round.")
+
+
+class BettingRoundCompleteError(BettingRoundError):
+    """Raised when an action is attempted after betting is complete."""
+
+
+class BettingActionError(BettingRoundError):
+    """Base class for an illegal betting action."""
+
+
+class OutOfTurnError(BettingActionError):
+    """Raised when a participant acts outside the authoritative turn order."""
+
+    def __init__(self, *, player_id: str, expected_player_id: str) -> None:
+        self.player_id = player_id
+        self.expected_player_id = expected_player_id
+        super().__init__(f"Player {player_id!r} cannot act; action is on {expected_player_id!r}.")
+
+
+class InvalidActionTypeError(BettingActionError):
+    """Raised when the aggregate receives an unknown action value."""
+
+
+class IllegalCheckError(BettingActionError):
+    """Raised when a player checks while facing a wager."""
+
+
+class IllegalCallError(BettingActionError):
+    """Raised when a player calls without facing a wager."""
+
+
+class IllegalBetError(BettingActionError):
+    """Raised when a player bets after a wager already exists."""
+
+
+class IllegalRaiseError(BettingActionError):
+    """Raised when a player raises before a wager exists."""
+
+
+class RaiseNotReopenedError(BettingActionError):
+    """Raised when a prior actor attempts to raise without facing a full raise."""
+
+
+class InvalidWagerAmountError(BettingActionError):
+    """Raised when a bet-to or raise-to amount is not a positive integer."""
+
+
+class WagerBelowMinimumError(BettingActionError):
+    """Raised when a non-all-in wager is below the required minimum."""
+
+    def __init__(self, *, requested_total: int, minimum_total: int) -> None:
+        self.requested_total = requested_total
+        self.minimum_total = minimum_total
+        super().__init__(
+            f"Wager total {requested_total} is below the required minimum {minimum_total}."
+        )
+
+
+class WagerExceedsStackError(BettingActionError):
+    """Raised when a wager exceeds the chips available to its actor."""
+
+    def __init__(self, *, requested_total: int, maximum_total: int) -> None:
+        self.requested_total = requested_total
+        self.maximum_total = maximum_total
+        super().__init__(
+            f"Wager total {requested_total} exceeds the available total {maximum_total}."
+        )

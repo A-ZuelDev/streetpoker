@@ -23,3 +23,14 @@ players may retain a zero stack.
 
 Table state does not own cards, dealing, blinds, betting, pots, streets, hand evaluation, active-hand
 lifecycle, network connections, serialization, or persistence concerns.
+
+Phase 3 adds a separate aggregate for the pure mechanics of one no-limit betting round. The
+aggregate owns its participant snapshots, commitments, remaining stacks, wager and minimum-raise
+levels, player-relative action-reopening baselines, pending action, and clockwise turn order. Every
+successful command atomically replaces a complete immutable snapshot; failed commands preserve the
+prior snapshot.
+
+Betting rounds begin with zero contributions and an explicitly supplied first actor. Blind posting,
+street selection, cards, pots and side-pot construction, showdown, and full-hand lifecycle remain
+outside this aggregate. Future preflop initialization will require generic forced contributions and
+a nominal live wager level so that a short blind does not incorrectly reduce the amount to call.
