@@ -251,6 +251,10 @@ def _validate_result(result: PotConstructionResult) -> None:
         raise InvalidConstructedPotError("Result contributions must be canonically ordered.")
     if len({item.player_id for item in contributions}) != len(contributions):
         raise InvalidConstructedPotError("Result contributions must have unique players.")
+    if all(item.status is PotEligibilityStatus.FOLDED for item in contributions):
+        raise NoEligiblePotParticipantError(
+            "A pot-construction result requires at least one live participant."
+        )
     if not isinstance(result.pots, tuple) or any(not isinstance(pot, Pot) for pot in result.pots):
         raise InvalidConstructedPotError("Result pots must be a tuple of Pot values.")
     if result.uncalled_excess is not None and not isinstance(

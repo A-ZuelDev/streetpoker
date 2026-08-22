@@ -421,6 +421,15 @@ def test_duplicate_players_and_all_folded_inputs_are_typed_failures() -> None:
         construct_pots([contribution("A", 10, FOLDED), contribution("B", 10, FOLDED)])
 
 
+def test_direct_result_requires_at_least_one_live_participant() -> None:
+    with pytest.raises(NoEligiblePotParticipantError):
+        PotConstructionResult(
+            contributions=(contribution("A", 0, FOLDED), contribution("B", 0, FOLDED)),
+            pots=(),
+            uncalled_excess=None,
+        )
+
+
 def test_invalid_directly_constructed_domain_values_are_rejected() -> None:
     with pytest.raises(InvalidConstructedPotError):
         ContributionTier(10, 10)
