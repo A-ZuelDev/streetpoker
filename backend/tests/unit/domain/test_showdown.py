@@ -707,6 +707,125 @@ def test_top_level_result_rejects_cross_record_reconciliation_errors() -> None:
         )
 
 
+def test_direct_result_rejects_live_contributor_omitted_from_eligibility() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+            ),
+            button=3,
+            board="2c 7d 9h Js Qd",
+        )
+    )
+    original_award = valid.pot_awards[0]
+    invalid_pot = replace(original_award.pot, eligible_players=frozenset({pid("A")}))
+    invalid_award = replace(original_award, pot=invalid_pot)
+
+    with pytest.raises(InvalidEligiblePlayerError):
+        replace(valid, pot_awards=(invalid_award,))
+
+
+def test_direct_result_allows_folded_contributor_excluded_from_eligibility() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.FOLDED, "Kh Kd"),
+            ),
+            button=3,
+            board="",
+            phase=HoldemHandPhase.COMPLETE_BY_FOLD,
+            uncontested="A",
+        )
+    )
+
+    reconstructed = HandSettlementResult(
+        source=valid.source,
+        evaluations=valid.evaluations,
+        pot_awards=valid.pot_awards,
+        player_settlements=valid.player_settlements,
+        uncontested_winner=valid.uncontested_winner,
+    )
+
+    assert reconstructed == valid
+
+
+def test_direct_result_allows_all_live_contributors_as_exact_eligibility() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+            ),
+            button=3,
+            board="2c 7d 9h Js Qd",
+        )
+    )
+
+    reconstructed = HandSettlementResult(
+        source=valid.source,
+        evaluations=valid.evaluations,
+        pot_awards=valid.pot_awards,
+        player_settlements=valid.player_settlements,
+        uncontested_winner=valid.uncontested_winner,
+    )
+
+    assert reconstructed == valid
+
+
+def test_direct_result_rejects_contributor_without_player_settlement() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+                ("C", 5, 900, 100, HoldemParticipantStatus.ACTIVE, "Qh Qc"),
+            ),
+            button=3,
+            board="2c 7d 9h Js 4d",
+        )
+    )
+    reduced_award = replace(
+        valid.pot_awards[0],
+        participant_seats=(SeatIndex(0), SeatIndex(3)),
+    )
+
+    with pytest.raises(InvalidSettlementResultError):
+        HandSettlementResult(
+            source=valid.source,
+            evaluations=valid.evaluations[:2],
+            pot_awards=(reduced_award,),
+            player_settlements=valid.player_settlements[:2],
+            uncontested_winner=None,
+        )
+
+
+def test_noncontributor_cannot_be_added_to_pot_eligibility() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+                ("C", 5, 1_000, 0, HoldemParticipantStatus.ACTIVE, "Qh Qc"),
+            ),
+            button=3,
+            board="2c 7d 9h Js 4d",
+        )
+    )
+
+    invalid_pot = replace(valid.pot_awards[0].pot)
+    object.__setattr__(
+        invalid_pot,
+        "eligible_players",
+        frozenset({pid("A"), pid("B"), pid("C")}),
+    )
+    invalid_award = replace(valid.pot_awards[0], pot=invalid_pot)
+
+    with pytest.raises(InvalidEligiblePlayerError):
+        replace(valid, pot_awards=(invalid_award,))
+
+
 @given(commitment=st.integers(min_value=1, max_value=500))
 def test_generated_tied_pots_reconcile_eligibility_shares_and_global_chips(
     commitment: int,

@@ -248,12 +248,21 @@ class HandSettlementResult:
             evaluation.player_id: evaluation.evaluated_hand for evaluation in self.evaluations
         }
         for pot_award in self.pot_awards:
-            eligible_settlements = tuple(
-                settlement_by_id.get(player_id) for player_id in pot_award.pot.eligible_players
+            contributor_settlements = tuple(
+                settlement_by_id.get(player_id) for player_id in pot_award.pot.contributors
             )
-            if any(item is None or item.folded for item in eligible_settlements):
+            if any(item is None for item in contributor_settlements):
                 raise InvalidSettlementResultError(
-                    "Every eligible pot player must have a live player settlement."
+                    "Every pot contributor must have exactly one player settlement."
+                )
+            expected_eligible = frozenset(
+                item.player_id
+                for item in contributor_settlements
+                if item is not None and not item.folded
+            )
+            if pot_award.pot.eligible_players != expected_eligible:
+                raise InvalidEligiblePlayerError(
+                    "Pot eligibility must equal its non-folded contributor subset."
                 )
             if self.source is SettlementSource.SHOWDOWN:
                 try:

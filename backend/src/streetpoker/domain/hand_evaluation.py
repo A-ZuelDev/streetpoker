@@ -94,6 +94,10 @@ class HandRank:
 
         if self.category in {HandCategory.HIGH_CARD, HandCategory.FLUSH}:
             _require_strictly_descending(values, "High-card and flush ranks")
+            if _straight_high(frozenset(values)) is not None:
+                raise InvalidHandRankError(
+                    "High-card and flush ranks cannot form a five-card straight."
+                )
             return
 
         if self.category is HandCategory.FOUR_OF_A_KIND:

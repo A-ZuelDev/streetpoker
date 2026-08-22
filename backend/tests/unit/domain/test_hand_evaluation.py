@@ -288,6 +288,43 @@ def test_hand_rank_rejects_bool_non_tuple_and_invalid_category() -> None:
         HandRank(8, (14,))  # type: ignore[arg-type]
 
 
+def test_broadway_shaped_high_card_rank_is_rejected() -> None:
+    with pytest.raises(InvalidHandRankError):
+        HandRank(HandCategory.HIGH_CARD, (14, 13, 12, 11, 10))
+
+
+def test_nine_high_straight_shaped_high_card_rank_is_rejected() -> None:
+    with pytest.raises(InvalidHandRankError):
+        HandRank(HandCategory.HIGH_CARD, (9, 8, 7, 6, 5))
+
+
+def test_wheel_shaped_high_card_rank_is_rejected() -> None:
+    with pytest.raises(InvalidHandRankError):
+        HandRank(HandCategory.HIGH_CARD, (14, 5, 4, 3, 2))
+
+
+def test_broadway_shaped_flush_rank_is_rejected() -> None:
+    with pytest.raises(InvalidHandRankError):
+        HandRank(HandCategory.FLUSH, (14, 13, 12, 11, 10))
+
+
+def test_wheel_shaped_flush_rank_is_rejected() -> None:
+    with pytest.raises(InvalidHandRankError):
+        HandRank(HandCategory.FLUSH, (14, 5, 4, 3, 2))
+
+
+def test_nearby_nonstraight_high_card_rank_remains_valid() -> None:
+    rank = HandRank(HandCategory.HIGH_CARD, (14, 13, 12, 11, 9))
+
+    assert rank.tiebreak_values == (14, 13, 12, 11, 9)
+
+
+def test_nearby_nonstraight_flush_rank_remains_valid() -> None:
+    rank = HandRank(HandCategory.FLUSH, (14, 13, 11, 8, 4))
+
+    assert rank.tiebreak_values == (14, 13, 11, 8, 4)
+
+
 def test_evaluated_hand_direct_construction_validates_cards_rank_and_order() -> None:
     result = evaluated("Ac Ad", "Ks Qh Jc 7d 2s")
     with pytest.raises(InvalidEvaluatedHandError):
