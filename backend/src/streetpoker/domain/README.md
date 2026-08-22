@@ -90,3 +90,26 @@ private card independently rather than relying on UI hiding.
 Phase 5 stops at `SHOWDOWN_READY` or `COMPLETE_BY_FOLD`. It constructs pots and refunds uncalled
 excess but does not evaluate hands, select winners, award pots, split ties, assign odd chips, apply
 rake, serialize clients, persist state, or implement variants and alternate blind structures.
+
+Phase 6 adds pure standard Hold'em hand evaluation and terminal pot settlement. The evaluator
+accepts exactly two hole cards and five board cards, examines all 21 five-card combinations, and
+returns an explicit category-strength rank plus one deterministic canonical exact best five. Aces
+are high except in the five-high wheel. Suits never affect poker rank or winner comparison; an
+explicit suit order is used only to choose stable exact cards when equivalent selections exist.
+
+The public settlement boundary accepts a terminal `HoldemHandSnapshot`, validates its lifecycle,
+participant accounting, pot contributions, fold eligibility, returned excess, and dealt-card state,
+then derives a module-private compact input. Every contestable pot is resolved independently. A
+short all-in can win a main pot while remaining ineligible for later side pots, folded players are
+never evaluated or awarded, and `COMPLETE_BY_FOLD` performs no hand evaluation. Settlement is a
+pure immutable result; it does not mutate `HoldemHand`, `TableState`, commitments, or refunds.
+
+StreetPoker's Phase 6 high-only Hold'em odd-chip rule is fixed: for each tied pot, remaining chips
+are distributed clockwise beginning with the first tied winner strictly after the snapshotted
+dealer button. Ordering walks the actual snapshotted participant seat ring and wraps through the
+button seat last. Venue procedures can vary, but Phase 6 does not add rule configuration.
+
+Evaluation does not imply disclosure. Settlement results remain trusted server-domain state, and a
+future authorized projection and muck/show policy must independently decide which private cards a
+client may see. Run-it-twice, multiple boards, high/low splits, rake, PLO's exactly-two-hole and
+exactly-three-board constraint, and other poker variants remain outside Phase 6.
