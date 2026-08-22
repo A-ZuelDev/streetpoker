@@ -210,3 +210,43 @@ class WagerExceedsStackError(BettingActionError):
         super().__init__(
             f"Wager total {requested_total} exceeds the available total {maximum_total}."
         )
+
+
+class PotConstructionError(PokerDomainError):
+    """Base class for expected pot-construction failures."""
+
+
+class InvalidPotConstructionInputError(PotConstructionError):
+    """Raised when a contribution collection cannot be used to construct pots."""
+
+
+class InvalidPotContributionError(InvalidPotConstructionInputError):
+    """Raised when one participant contribution has invalid domain values."""
+
+
+class InvalidCommittedChipsError(InvalidPotContributionError):
+    """Raised when a cumulative commitment is not a nonnegative integer."""
+
+
+class DuplicatePotContributorError(InvalidPotConstructionInputError):
+    """Raised when a player appears more than once in pot-construction input."""
+
+
+class NoEligiblePotParticipantError(InvalidPotConstructionInputError):
+    """Raised when every supplied participant is folded."""
+
+
+class UnawardablePotError(InvalidPotConstructionInputError):
+    """Raised when a funded positive pot tier has no live eligible contributor."""
+
+    def __init__(self, *, lower_threshold: int, upper_threshold: int) -> None:
+        self.lower_threshold = lower_threshold
+        self.upper_threshold = upper_threshold
+        super().__init__(
+            "A funded pot tier has no live eligible contributor: "
+            f"({lower_threshold}, {upper_threshold}]."
+        )
+
+
+class InvalidConstructedPotError(PotConstructionError):
+    """Raised when a constructed pot value or result violates an invariant."""
