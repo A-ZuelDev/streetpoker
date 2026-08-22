@@ -26,6 +26,14 @@ without running earlier indexes:
 .\backend\.venv\Scripts\python.exe -m backend.tests.stress.holdem_stress --seed 20260822 --case-index 17
 ```
 
+From the backend project directory, use the test package directly:
+
+```powershell
+.\.venv\Scripts\python.exe -m tests.stress.holdem_stress --help
+.\.venv\Scripts\python.exe -m tests.stress.holdem_stress --hands 1000 --seed 20260822
+.\.venv\Scripts\python.exe -m tests.stress.holdem_stress --seed 20260822 --case-index 17
+```
+
 On the first failure the runner exits nonzero and prints the case index, master/case/action/deck
 seeds, complete scenario, all successfully resolved actions, exception, traceback, and exact replay
 command.

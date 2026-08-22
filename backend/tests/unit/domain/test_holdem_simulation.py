@@ -1,8 +1,10 @@
 from collections import Counter
 
 import pytest
-from backend.tests.stress import holdem_stress
-from backend.tests.support.holdem_simulation import (
+from hypothesis import event, given, settings
+from hypothesis import strategies as st
+from tests.stress import holdem_stress
+from tests.support.holdem_simulation import (
     ActionIntent,
     HandScenario,
     deterministic_scenario,
@@ -10,8 +12,6 @@ from backend.tests.support.holdem_simulation import (
     run_simulation,
     start_scenario,
 )
-from hypothesis import event, given, settings
-from hypothesis import strategies as st
 
 from streetpoker.domain import ActionKind, HoldemHandPhase, WagerClassification
 

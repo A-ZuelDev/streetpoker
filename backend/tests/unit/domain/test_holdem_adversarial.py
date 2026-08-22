@@ -1,14 +1,14 @@
 from collections.abc import Callable
 
 import pytest
-from backend.tests.support.holdem_simulation import (
+from hypothesis import event, given, settings
+from hypothesis import strategies as st
+from tests.support.holdem_simulation import (
     ActionIntent,
     HandScenario,
     run_simulation,
     start_scenario,
 )
-from hypothesis import event, given, settings
-from hypothesis import strategies as st
 
 from streetpoker.domain import (
     ActionKind,

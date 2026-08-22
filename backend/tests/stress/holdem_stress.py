@@ -9,7 +9,7 @@ import time
 import traceback
 from collections.abc import Sequence
 
-from backend.tests.support.holdem_simulation import (
+from ..support.holdem_simulation import (
     ResolvedAction,
     deterministic_scenario,
     resolved_action_as_dict,
@@ -76,8 +76,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("traceback:", file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             print(
-                "replay=.\\backend\\.venv\\Scripts\\python.exe -m "
-                "backend.tests.stress.holdem_stress "
+                f'replay=& "{sys.executable}" -m {__package__}.holdem_stress '
                 f"--seed {args.seed} --case-index {case_index}",
                 file=sys.stderr,
             )
