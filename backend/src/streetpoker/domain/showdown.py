@@ -213,6 +213,9 @@ class HandSettlementResult:
             range(len(self.pot_awards))
         ):
             raise InvalidSettlementResultError("Pot-award indexes must be unique and contiguous.")
+        awarded_pots = tuple(award.pot for award in self.pot_awards)
+        if len(set(awarded_pots)) != len(awarded_pots):
+            raise InvalidSettlementResultError("Each physical pot may be awarded exactly once.")
         for award in self.pot_awards:
             if award.participant_seats != seats:
                 raise InvalidSettlementResultError(

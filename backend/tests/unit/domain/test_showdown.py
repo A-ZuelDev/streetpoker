@@ -707,6 +707,128 @@ def test_top_level_result_rejects_cross_record_reconciliation_errors() -> None:
         )
 
 
+def test_direct_result_rejects_duplicate_pot_despite_reconciled_totals() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+            ),
+            button=3,
+            board="2c 7d 9h Js Qd",
+        )
+    )
+    original_award = valid.pot_awards[0]
+    duplicate_award = replace(original_award, pot_index=1)
+    winner = valid.player_settlements[0]
+    inflated_winner = replace(
+        winner,
+        total_award=winner.total_award + original_award.pot.amount,
+        final_stack=ChipStack(winner.final_stack.chips + original_award.pot.amount),
+    )
+
+    with pytest.raises(InvalidSettlementResultError, match="awarded exactly once"):
+        replace(
+            valid,
+            pot_awards=(original_award, duplicate_award),
+            player_settlements=(inflated_winner, valid.player_settlements[1]),
+        )
+
+
+def test_direct_result_rejects_duplicate_pot_with_different_winner_shares() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 900, 100, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+            ),
+            button=3,
+            board="2c 7d 9h Js Qd",
+        )
+    )
+    original_award = valid.pot_awards[0]
+    alternate_winner = valid.player_settlements[1]
+    duplicate_award = PotAward(
+        pot_index=1,
+        pot=original_award.pot,
+        button_position=original_award.button_position,
+        participant_seats=original_award.participant_seats,
+        base_share=original_award.pot.amount,
+        winner_shares=(
+            WinnerShare(
+                player_id=alternate_winner.player_id,
+                seat_index=alternate_winner.seat_index,
+                chips=original_award.pot.amount,
+                receives_odd_chip=False,
+            ),
+        ),
+    )
+    inflated_alternate = replace(
+        alternate_winner,
+        total_award=original_award.pot.amount,
+        final_stack=ChipStack(alternate_winner.final_stack.chips + original_award.pot.amount),
+    )
+
+    with pytest.raises(InvalidSettlementResultError, match="awarded exactly once"):
+        replace(
+            valid,
+            pot_awards=(original_award, duplicate_award),
+            player_settlements=(valid.player_settlements[0], inflated_alternate),
+        )
+
+
+def test_direct_result_allows_distinct_pots_with_the_same_amount() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 750, 250, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 3, 750, 250, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+                ("C", 5, 900, 100, HoldemParticipantStatus.ACTIVE, "Qh Qc"),
+            ),
+            button=5,
+            board="2c 7d 9h Js 4d",
+        )
+    )
+
+    assert tuple(award.pot.amount for award in valid.pot_awards) == (300, 300)
+    assert valid.pot_awards[0].pot != valid.pot_awards[1].pot
+    reconstructed = HandSettlementResult(
+        source=valid.source,
+        evaluations=valid.evaluations,
+        pot_awards=valid.pot_awards,
+        player_settlements=valid.player_settlements,
+        uncontested_winner=valid.uncontested_winner,
+    )
+
+    assert reconstructed == valid
+
+
+def test_direct_result_allows_ordinary_distinct_multi_side_pots() -> None:
+    valid = settle_holdem_hand(
+        terminal_snapshot(
+            (
+                ("A", 0, 900, 100, HoldemParticipantStatus.ACTIVE, "Ah Ad"),
+                ("B", 2, 800, 200, HoldemParticipantStatus.ACTIVE, "Kh Kd"),
+                ("C", 3, 700, 300, HoldemParticipantStatus.ACTIVE, "Ks Kc"),
+                ("D", 5, 700, 300, HoldemParticipantStatus.ACTIVE, "Th Td"),
+            ),
+            button=5,
+            board="2c 7d 9h Js Qd",
+        )
+    )
+
+    assert len(valid.pot_awards) == 3
+    reconstructed = HandSettlementResult(
+        source=valid.source,
+        evaluations=valid.evaluations,
+        pot_awards=valid.pot_awards,
+        player_settlements=valid.player_settlements,
+        uncontested_winner=valid.uncontested_winner,
+    )
+
+    assert reconstructed == valid
+
+
 def test_direct_result_rejects_live_contributor_omitted_from_eligibility() -> None:
     valid = settle_holdem_hand(
         terminal_snapshot(
