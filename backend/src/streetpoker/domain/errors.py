@@ -13,6 +13,30 @@ class CardDataError(PokerDomainError):
     """Raised when primitive card data cannot be decoded."""
 
 
+class HandEvaluationError(PokerDomainError):
+    """Base class for expected poker-hand evaluation failures."""
+
+
+class InvalidHoldemEvaluationInputError(HandEvaluationError):
+    """Raised when cards cannot be used as a seven-card Hold'em holding."""
+
+
+class InvalidHoldemCardCountError(InvalidHoldemEvaluationInputError):
+    """Raised when Hold'em evaluation does not receive exactly two plus five cards."""
+
+
+class DuplicateEvaluationCardError(InvalidHoldemEvaluationInputError):
+    """Raised when the same card appears more than once in evaluation input."""
+
+
+class InvalidHandRankError(HandEvaluationError):
+    """Raised when a canonical comparable hand rank is structurally invalid."""
+
+
+class InvalidEvaluatedHandError(HandEvaluationError):
+    """Raised when exact best-five cards do not match their declared hand rank."""
+
+
 class DeckError(PokerDomainError):
     """Base class for expected deck failures."""
 
@@ -302,3 +326,47 @@ class PlayerNotInHandError(HoldemHandError):
     def __init__(self, *, player_id: str) -> None:
         self.player_id = player_id
         super().__init__(f"Player {player_id!r} is not in this hand.")
+
+
+class SettlementError(PokerDomainError):
+    """Base class for expected Hold'em settlement failures."""
+
+
+class InvalidSettlementInputError(SettlementError):
+    """Raised when terminal hand state cannot be settled consistently."""
+
+
+class HandNotTerminalError(InvalidSettlementInputError):
+    """Raised when settlement is requested before a hand is terminal."""
+
+
+class MissingPotResultError(InvalidSettlementInputError):
+    """Raised when terminal hand state has no contestable pot result."""
+
+
+class InvalidShowdownBoardError(InvalidSettlementInputError):
+    """Raised when showdown does not contain exactly five valid board cards."""
+
+
+class InvalidEligiblePlayerError(InvalidSettlementInputError):
+    """Raised when pot eligibility disagrees with terminal participants."""
+
+
+class DuplicateSettlementParticipantError(InvalidSettlementInputError):
+    """Raised when settlement participants repeat an identity or seat."""
+
+
+class NoEligibleWinnerError(SettlementError):
+    """Raised when a contestable pot has no player who can win it."""
+
+
+class InvalidOddChipOrderingError(SettlementError):
+    """Raised when a pot award violates clockwise odd-chip ordering."""
+
+
+class InvalidSettlementResultError(SettlementError):
+    """Raised when an immutable settlement result violates its invariants."""
+
+
+class AwardReconciliationError(InvalidSettlementResultError):
+    """Raised when pot awards or final stacks fail exact chip reconciliation."""
