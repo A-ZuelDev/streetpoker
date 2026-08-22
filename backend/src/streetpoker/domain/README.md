@@ -46,3 +46,47 @@ Pot construction does not aggregate street commitments, mutate stacks, validate 
 reachability, evaluate hands, select winners, award chips, distribute odd chips, divide pots across
 boards, or apply rake. A future authoritative hand orchestrator must supply cumulative commitments
 and map betting participants to the pot-specific live-or-folded eligibility state.
+
+Phase 5 adds `HoldemHand`, the authoritative pure-domain aggregate for one no-limit Texas Hold'em
+hand from table snapshot through fold completion or showdown readiness. Starting a hand snapshots
+eligible sitting-in positive-stack occupants and the current eligible button. The hand then owns its
+participant stacks, private shuffled deck, private hole cards, private burn pile, public board,
+street state, and current betting-round candidate. It never mutates `TableState`; a later settlement
+layer will apply awarded final stacks between hands.
+
+Every participant obeys one accounting equation throughout the hand:
+
+`starting_stack = current_stack + gross_committed - returned_excess`
+
+Gross commitments are cumulative and monotonic. Street commitments reset between betting rounds.
+Returned excess is zero until terminal pot construction; unique uncalled excess is then restored to
+the participant's current stack while gross commitment remains unchanged for audit and replay.
+Contestable commitment is `gross_committed - returned_excess`.
+
+StreetPoker Phase 5 uses an explicit short-blind policy. With three or more participants, a short
+all-in big blind does not reduce the nominal preflop live wager or minimum raise increment. At
+50/100 with a big blind posting only 60, the first call target is 100 and the first full raise-to is
+200, while pot accounting retains the actual 60 post. Heads-up, when the big blind is all-in short,
+the live target is the highest actual blind commitment. A small blind posting 50 against a 60 big
+blind may call 10 or fold but cannot raise without an active opponent. If the big blind posts only
+30 against a 50 small blind, no action remains; terminal pot construction returns the unmatched
+small-blind excess. The nominal big blind remains the minimum raise increment. This is a fixed
+StreetPoker policy, not a configurable poker-room rules framework.
+
+`BettingRound` remains responsible for checks, calls, bets, raises, folds, minimum raises, reopening,
+and turn order. Its generic initial commitments and initial live wager represent forced live posts
+without blind-specific logic. `HoldemHand` reconciles only round deltas into cumulative state,
+propagates fold/all-in status, deals later streets, and creates no new round when fewer than two
+players can bet. A lone player still facing an all-in wager retains a call-or-fold decision, but no
+player may create an uncontested aggressive wager against only all-in opponents.
+
+All aggregate transitions use narrowly scoped copy-on-write: an independent deck and betting-round
+candidate are mutated, reconciled, and validated before replacing authoritative state. Mutable
+`Deck` and `BettingRound` instances are never exposed by `HoldemHand`. Its immutable snapshot is
+trusted server-domain state, not a client serializer. Burn identities remain private inside the
+aggregate; the snapshot exposes only their count. Future viewer projections must authorize every
+private card independently rather than relying on UI hiding.
+
+Phase 5 stops at `SHOWDOWN_READY` or `COMPLETE_BY_FOLD`. It constructs pots and refunds uncalled
+excess but does not evaluate hands, select winners, award pots, split ties, assign odd chips, apply
+rake, serialize clients, persist state, or implement variants and alternate blind structures.

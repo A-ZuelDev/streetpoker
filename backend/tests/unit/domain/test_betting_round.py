@@ -111,6 +111,141 @@ def test_round_starts_with_zero_commitments_and_explicit_first_actor() -> None:
     assert_round_invariants(round_state)
 
 
+def test_generic_initial_commitments_are_deducted_and_short_forced_player_is_all_in() -> None:
+    round_state = BettingRound.start(
+        players=(
+            BettingRoundPlayer(player_id("A"), SeatIndex(0), ChipStack(1_000), 50),
+            BettingRoundPlayer(player_id("B"), SeatIndex(1), ChipStack(60), 60),
+            BettingRoundPlayer(player_id("C"), SeatIndex(2), ChipStack(1_000)),
+        ),
+        first_to_act=player_id("C"),
+        minimum_bet=100,
+        initial_wager=100,
+    )
+
+    assert round_state.current_wager == 100
+    assert round_state.minimum_raise_increment == 100
+    assert round_state.participant(player_id("A")).remaining_stack == ChipStack(950)
+    assert round_state.participant(player_id("B")).remaining_stack == ChipStack(0)
+    assert round_state.participant(player_id("B")).status is BettingParticipantStatus.ALL_IN
+    assert round_state.current_player == player_id("C")
+
+
+@pytest.mark.parametrize("commitment", [-1, True, False, 1.5, "50", None])
+def test_invalid_initial_commitments_are_rejected(commitment: object) -> None:
+    with pytest.raises(InvalidBettingParticipantError):
+        BettingRoundPlayer(
+            player_id("A"),
+            SeatIndex(0),
+            ChipStack(100),
+            commitment,  # type: ignore[arg-type]
+        )
+
+
+def test_initial_commitment_cannot_exceed_starting_stack() -> None:
+    with pytest.raises(InvalidBettingParticipantError):
+        BettingRoundPlayer(player_id("A"), SeatIndex(0), ChipStack(50), 51)
+
+
+@pytest.mark.parametrize("initial_wager", [-1, True, False, 1.5, "100", None])
+def test_invalid_initial_wagers_are_rejected(initial_wager: object) -> None:
+    with pytest.raises(InvalidBettingRoundStateError):
+        BettingRound.start(
+            players=(player("A", 0), player("B", 1)),
+            first_to_act=player_id("A"),
+            minimum_bet=100,
+            initial_wager=initial_wager,  # type: ignore[arg-type]
+        )
+
+
+def test_initial_wager_cannot_be_below_initial_commitment() -> None:
+    with pytest.raises(InvalidBettingRoundStateError):
+        BettingRound.start(
+            players=(
+                BettingRoundPlayer(player_id("A"), SeatIndex(0), ChipStack(100), 100),
+                player("B", 1),
+            ),
+            first_to_act=player_id("B"),
+            minimum_bet=100,
+            initial_wager=60,
+        )
+
+
+def test_multiway_short_big_blind_preserves_nominal_call_and_raise_targets() -> None:
+    round_state = BettingRound.start(
+        players=(
+            BettingRoundPlayer(player_id("SB"), SeatIndex(0), ChipStack(1_000), 50),
+            BettingRoundPlayer(player_id("BB"), SeatIndex(1), ChipStack(60), 60),
+            player("UTG", 2),
+            player("BTN", 5),
+        ),
+        first_to_act=player_id("UTG"),
+        minimum_bet=100,
+        initial_wager=100,
+    )
+
+    actions = round_state.legal_actions()
+    assert actions.amount_to_call == 100
+    assert actions.raise_to is not None
+    assert actions.raise_to.minimum_full_to == 200
+    assert actions.raise_reopened
+
+
+def test_big_blind_retains_option_after_unraised_preflop_calls() -> None:
+    round_state = BettingRound.start(
+        players=(
+            BettingRoundPlayer(player_id("SB"), SeatIndex(0), ChipStack(1_000), 50),
+            BettingRoundPlayer(player_id("BB"), SeatIndex(1), ChipStack(1_000), 100),
+            player("UTG", 2),
+        ),
+        first_to_act=player_id("UTG"),
+        minimum_bet=100,
+        initial_wager=100,
+    )
+    round_state.call(player_id=player_id("UTG"))
+    round_state.call(player_id=player_id("SB"))
+
+    actions = round_state.legal_actions()
+    assert actions.player_id == player_id("BB")
+    assert ActionKind.CHECK in actions.kinds
+    assert ActionKind.RAISE in actions.kinds
+    assert actions.raise_to is not None
+    assert actions.raise_to.minimum_full_to == 200
+
+
+def test_only_active_player_facing_all_in_can_call_or_fold_but_cannot_raise() -> None:
+    round_state = BettingRound.start(
+        players=(
+            BettingRoundPlayer(player_id("A"), SeatIndex(0), ChipStack(1_000), 50),
+            BettingRoundPlayer(player_id("B"), SeatIndex(1), ChipStack(60), 60),
+        ),
+        first_to_act=player_id("A"),
+        minimum_bet=100,
+        initial_wager=60,
+    )
+
+    actions = round_state.legal_actions()
+    assert actions.kinds == frozenset({ActionKind.CALL, ActionKind.FOLD})
+    assert actions.amount_to_call == 10
+    assert actions.raise_to is None
+    assert not actions.raise_reopened
+
+    before = round_state.snapshot
+    with pytest.raises(IllegalRaiseError):
+        round_state.raise_to(player_id=player_id("A"), total=160)
+    assert round_state.snapshot == before
+
+
+def test_round_copy_is_independent_for_transactional_transitions() -> None:
+    original = betting_round(player("A", 0), player("B", 1))
+    candidate = original.copy()
+
+    candidate.check(player_id=player_id("A"))
+
+    assert original.current_player == player_id("A")
+    assert candidate.current_player == player_id("B")
+
+
 @pytest.mark.parametrize("minimum_bet", [0, -1, True, False, 1.5, "100", None])
 def test_invalid_minimum_bets_are_rejected(minimum_bet: object) -> None:
     with pytest.raises(InvalidMinimumBetError):

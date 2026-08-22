@@ -64,6 +64,7 @@ class BettingRoundPlayer:
     player_id: PlayerId
     seat_index: SeatIndex
     stack: ChipStack
+    initial_commitment: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.player_id, PlayerId):
@@ -72,6 +73,18 @@ class BettingRoundPlayer:
             raise InvalidBettingParticipantError("A betting player requires a SeatIndex.")
         if not isinstance(self.stack, ChipStack) or self.stack.chips <= 0:
             raise InvalidBettingParticipantError("A betting player requires a positive ChipStack.")
+        if (
+            not isinstance(self.initial_commitment, int)
+            or isinstance(self.initial_commitment, bool)
+            or self.initial_commitment < 0
+        ):
+            raise InvalidBettingParticipantError(
+                "An initial commitment requires a nonnegative integer chip count."
+            )
+        if self.initial_commitment > self.stack.chips:
+            raise InvalidBettingParticipantError(
+                "An initial commitment cannot exceed the player's starting stack."
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,11 +207,18 @@ class BettingRound:
         players: Iterable[BettingRoundPlayer],
         first_to_act: PlayerId,
         minimum_bet: int,
+        initial_wager: int = 0,
     ) -> None:
         if not isinstance(minimum_bet, int) or isinstance(minimum_bet, bool) or minimum_bet <= 0:
             raise InvalidMinimumBetError("The minimum bet must be a positive integer.")
         if not isinstance(first_to_act, PlayerId):
             raise InvalidBettingRoundStateError("The first actor must be a PlayerId.")
+        if (
+            not isinstance(initial_wager, int)
+            or isinstance(initial_wager, bool)
+            or initial_wager < 0
+        ):
+            raise InvalidBettingRoundStateError("The initial wager must be a nonnegative integer.")
 
         try:
             copied_players = tuple(players)
@@ -223,6 +243,15 @@ class BettingRound:
             raise DuplicateBettingSeatError("Betting-round seats must be unique.")
         if first_to_act not in player_ids:
             raise PlayerNotInBettingRoundError(player_id=first_to_act.value)
+        highest_initial_commitment = max(player.initial_commitment for player in copied_players)
+        if initial_wager < highest_initial_commitment:
+            raise InvalidBettingRoundStateError(
+                "The initial wager cannot be below an initial commitment."
+            )
+        if initial_wager == 0 and highest_initial_commitment > 0:
+            raise InvalidBettingRoundStateError(
+                "A positive initial commitment requires a positive initial wager."
+            )
 
         participants = tuple(
             sorted(
@@ -231,9 +260,13 @@ class BettingRound:
                         player_id=player.player_id,
                         seat_index=player.seat_index,
                         starting_stack=player.stack,
-                        remaining_stack=player.stack,
-                        committed=0,
-                        status=BettingParticipantStatus.ACTIVE,
+                        remaining_stack=ChipStack(player.stack.chips - player.initial_commitment),
+                        committed=player.initial_commitment,
+                        status=(
+                            BettingParticipantStatus.ALL_IN
+                            if player.initial_commitment == player.stack.chips
+                            else BettingParticipantStatus.ACTIVE
+                        ),
                         last_action_wager=None,
                     )
                     for player in copied_players
@@ -241,14 +274,26 @@ class BettingRound:
                 key=lambda participant: participant.seat_index.value,
             )
         )
+        active = tuple(
+            participant
+            for participant in participants
+            if participant.status is BettingParticipantStatus.ACTIVE
+        )
+        pending_players = frozenset(participant.player_id for participant in active)
+        outstanding_call = any(participant.committed < initial_wager for participant in active)
+        complete = not pending_players or (len(active) <= 1 and not outstanding_call)
+        if not complete and first_to_act not in pending_players:
+            raise InvalidBettingRoundStateError(
+                "The first actor must be active when initial action is pending."
+            )
         snapshot = BettingRoundSnapshot(
             participants=participants,
             minimum_bet=minimum_bet,
             minimum_raise_increment=minimum_bet,
-            current_wager=0,
-            pending_players=frozenset(player_ids),
-            current_player=first_to_act,
-            complete=False,
+            current_wager=initial_wager,
+            pending_players=(frozenset() if complete else pending_players),
+            current_player=(None if complete else first_to_act),
+            complete=complete,
         )
         self._validate_snapshot(snapshot)
         self._snapshot = snapshot
@@ -260,9 +305,21 @@ class BettingRound:
         players: Iterable[BettingRoundPlayer],
         first_to_act: PlayerId,
         minimum_bet: int,
+        initial_wager: int = 0,
     ) -> Self:
-        """Start a zero-contribution betting round."""
-        return cls(players=players, first_to_act=first_to_act, minimum_bet=minimum_bet)
+        """Start a betting round with optional generic live initial commitments."""
+        return cls(
+            players=players,
+            first_to_act=first_to_act,
+            minimum_bet=minimum_bet,
+            initial_wager=initial_wager,
+        )
+
+    def copy(self) -> Self:
+        """Return an independent aggregate for transactional copy-on-write use."""
+        copied = object.__new__(type(self))
+        copied._snapshot = self._snapshot
+        return copied
 
     @property
     def snapshot(self) -> BettingRoundSnapshot:
@@ -327,8 +384,13 @@ class BettingRound:
             )
             kinds.add(ActionKind.CALL)
 
-        raise_reopened = snapshot.current_wager > 0 and self._raise_is_reopened(snapshot, actor)
-        if snapshot.current_wager == 0 and maximum_total > 0:
+        has_active_opponent = self._has_active_opponent(snapshot, actor)
+        raise_reopened = (
+            snapshot.current_wager > 0
+            and has_active_opponent
+            and self._raise_is_reopened(snapshot, actor)
+        )
+        if snapshot.current_wager == 0 and maximum_total > 0 and has_active_opponent:
             bet_bounds = self._wager_bounds(
                 minimum_full_to=snapshot.minimum_bet,
                 maximum_to=maximum_total,
@@ -465,6 +527,8 @@ class BettingRound:
     ) -> tuple[BettingRoundSnapshot, ActionResult]:
         if snapshot.current_wager != 0:
             raise IllegalBetError("Cannot bet after a wager exists; use raise instead.")
+        if not self._has_active_opponent(snapshot, actor):
+            raise IllegalBetError("Cannot bet without an active opponent who can respond.")
         maximum_total = actor.committed + actor.remaining_stack.chips
         self._validate_requested_total(
             total=total,
@@ -512,6 +576,8 @@ class BettingRound:
     ) -> tuple[BettingRoundSnapshot, ActionResult]:
         if snapshot.current_wager == 0:
             raise IllegalRaiseError("Cannot raise before a wager exists; use bet instead.")
+        if not self._has_active_opponent(snapshot, actor):
+            raise IllegalRaiseError("Cannot raise without an active opponent who can respond.")
         if not self._raise_is_reopened(snapshot, actor):
             raise RaiseNotReopenedError("Betting has not been reopened for this player.")
 
@@ -689,6 +755,17 @@ class BettingRound:
         )
 
     @staticmethod
+    def _has_active_opponent(
+        snapshot: BettingRoundSnapshot,
+        participant: BettingRoundParticipant,
+    ) -> bool:
+        return any(
+            other.player_id != participant.player_id
+            and other.status is BettingParticipantStatus.ACTIVE
+            for other in snapshot.participants
+        )
+
+    @staticmethod
     def _wager_bounds(*, minimum_full_to: int, maximum_to: int) -> WagerBounds:
         return WagerBounds(
             minimum_full_to=minimum_full_to,
@@ -785,8 +862,10 @@ class BettingRound:
             ):
                 raise InvalidBettingRoundStateError("A last-action wager is outside the round.")
 
-        if snapshot.current_wager != max(participant.committed for participant in participants):
-            raise InvalidBettingRoundStateError("The current wager must equal the high commitment.")
+        if snapshot.current_wager < max(participant.committed for participant in participants):
+            raise InvalidBettingRoundStateError(
+                "The current wager cannot be below the high commitment."
+            )
         active_ids = {
             participant.player_id
             for participant in participants
