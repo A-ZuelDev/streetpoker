@@ -74,6 +74,18 @@ def test_drawing_the_final_card_empties_the_deck() -> None:
     assert deck.remaining_count == 0
 
 
+def test_deck_copy_preserves_order_and_is_independent() -> None:
+    deck = Deck.standard()
+    copied = deck.copy()
+
+    assert copied.remaining_count == deck.remaining_count
+    assert copied.draw(5) == deck.draw(5)
+    assert copied.remaining_count == deck.remaining_count
+
+    copied.draw(1)
+    assert copied.remaining_count == deck.remaining_count - 1
+
+
 @pytest.mark.parametrize("count", [0, -1, True, False, 1.5, "1", None])
 def test_invalid_draw_count_fails_without_mutation(count: object) -> None:
     deck = Deck.standard()

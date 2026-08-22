@@ -48,6 +48,10 @@ class Deck:
     def remaining_count(self) -> int:
         return len(self._cards)
 
+    def copy(self) -> Self:
+        """Return an independent deck with the same remaining private order."""
+        return type(self)(self._cards)
+
     def shuffle(self, *, random_source: RandomSource | None = None) -> None:
         """Shuffle remaining cards atomically, securely by default."""
         source = SecureRandomSource() if random_source is None else random_source

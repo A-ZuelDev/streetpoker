@@ -250,3 +250,55 @@ class UnawardablePotError(InvalidPotConstructionInputError):
 
 class InvalidConstructedPotError(PotConstructionError):
     """Raised when a constructed pot value or result violates an invariant."""
+
+
+class HoldemHandError(PokerDomainError):
+    """Base class for expected Hold'em hand lifecycle failures."""
+
+
+class InvalidHandInitializationError(HoldemHandError):
+    """Raised when a hand cannot be started from the supplied table and blinds."""
+
+
+class InsufficientEligibleParticipantsError(InvalidHandInitializationError):
+    """Raised when fewer than two table occupants are eligible for a hand."""
+
+
+class InvalidBlindStructureError(InvalidHandInitializationError):
+    """Raised when blind amounts do not form a valid StreetPoker structure."""
+
+
+class InvalidHandButtonError(InvalidHandInitializationError):
+    """Raised when the snapshotted button is absent or ineligible."""
+
+
+class InvalidHandStateError(HoldemHandError):
+    """Raised when authoritative hand state violates a lifecycle invariant."""
+
+
+class BettingRoundReconciliationError(InvalidHandStateError):
+    """Raised when a betting-round candidate cannot reconcile into hand state."""
+
+
+class HandChipAccountingError(InvalidHandStateError):
+    """Raised when per-player or global hand chip accounting does not reconcile."""
+
+
+class InvalidDealingStateError(InvalidHandStateError):
+    """Raised when authoritative dealt-card state violates Hold'em invariants."""
+
+
+class NoActiveBettingRoundError(HoldemHandError):
+    """Raised when an operation requires an active street betting round."""
+
+
+class HandAlreadyTerminalError(HoldemHandError):
+    """Raised when an action is attempted after the hand reaches a terminal state."""
+
+
+class PlayerNotInHandError(HoldemHandError):
+    """Raised when a hand operation references a nonparticipant."""
+
+    def __init__(self, *, player_id: str) -> None:
+        self.player_id = player_id
+        super().__init__(f"Player {player_id!r} is not in this hand.")
