@@ -34,3 +34,15 @@ Betting rounds begin with zero contributions and an explicitly supplied first ac
 street selection, cards, pots and side-pot construction, showdown, and full-hand lifecycle remain
 outside this aggregate. Future preflop initialization will require generic forced contributions and
 a nominal live wager level so that a short blind does not incorrectly reduce the amount to call.
+
+Phase 4 adds pure construction of ordered pots from immutable cumulative hand contributions and
+live-or-folded eligibility. The transformation retains authoritative committed amounts, identifies
+any unique-highest unmatched excess separately, and reconciles every chip globally and per player.
+Folded players continue to fund pots but cannot win them. Multiple contribution thresholds produce
+the main pot followed by ascending side pots, without depending on betting-round history or whether
+a live player has chips behind.
+
+Pot construction does not aggregate street commitments, mutate stacks, validate betting-history
+reachability, evaluate hands, select winners, award chips, distribute odd chips, divide pots across
+boards, or apply rake. A future authoritative hand orchestrator must supply cumulative commitments
+and map betting participants to the pot-specific live-or-folded eligibility state.
