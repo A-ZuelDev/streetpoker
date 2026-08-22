@@ -370,9 +370,9 @@ def test_generated_unique_seating_permutations_preserve_one_to_one_occupancy(
         seat_player(table, seat_index, player_number)
 
     assert table.occupied_count == count
-    assert {
-        table.find_player(player_id(player_number)) for player_number in range(count)
-    } == {SeatIndex(seat_index) for seat_index in order[:count]}
+    assert {table.find_player(player_id(player_number)) for player_number in range(count)} == {
+        SeatIndex(seat_index) for seat_index in order[:count]
+    }
     assert_table_invariants(table)
 
 
