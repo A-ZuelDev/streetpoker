@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError
+from decimal import Decimal
 
 import pytest
 
@@ -78,7 +79,13 @@ def test_room_settings_defaults_and_normalization() -> None:
         ({"big_blind": 25}, "big blind"),
         ({"default_starting_stack": 99}, "starting stack"),
         ({"seating_approval_required": 1}, "approval"),
+        ({"max_seats": 6.0}, "six seats"),
+        ({"max_seats": Decimal("6")}, "six seats"),
+        ({"max_seats": 6 + 0j}, "six seats"),
+        ({"max_seats": True}, "six seats"),
+        ({"max_seats": False}, "six seats"),
         ({"max_seats": 5}, "six seats"),
+        ({"max_seats": 7}, "six seats"),
     ],
 )
 def test_complete_room_settings_validation_is_atomic(
@@ -107,3 +114,7 @@ def test_room_values_and_settings_are_immutable() -> None:
         room_id.value = "other"  # type: ignore[misc]
     with pytest.raises(FrozenInstanceError):
         settings.room_name = "Other"  # type: ignore[misc]
+
+
+def test_plain_integer_six_is_the_only_valid_max_seats_value() -> None:
+    assert RoomSettings(room_name="Home", max_seats=6).max_seats == 6

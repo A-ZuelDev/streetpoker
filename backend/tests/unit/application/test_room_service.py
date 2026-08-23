@@ -50,6 +50,7 @@ HOST = GuestId("guest-host")
 ALICE = GuestId("guest-alice")
 BOB = GuestId("guest-bob")
 OUTSIDER = GuestId("guest-outsider")
+LONE_SURROGATE_PASSWORD = "\ud800"
 
 
 class SequenceCodeSource(RoomCodeSource):
@@ -95,6 +96,7 @@ def build_service(
     *,
     codes: tuple[str, ...] = ("ABCDEFGH",),
     repository: InMemoryRoomRepository | None = None,
+    password_hasher: PasswordHasher | None = None,
 ) -> tuple[RoomService, InMemoryRoomRepository]:
     room_repository = repository or InMemoryRoomRepository()
     ids = IdSequence("test")
@@ -102,7 +104,7 @@ def build_service(
         RoomService(
             repository=room_repository,
             code_source=SequenceCodeSource(*codes),
-            password_hasher=FastPasswordHasher(),
+            password_hasher=password_hasher or FastPasswordHasher(),
             room_id_factory=ids.room_id,
             player_id_factory=ids.player_id,
         ),
@@ -315,6 +317,52 @@ def test_password_input_is_bounded(password: str) -> None:
 
     with pytest.raises(InvalidRoomPasswordError):
         hasher.hash_password(password)
+
+
+def test_unencodable_password_rejects_room_creation_without_reserving_indexes() -> None:
+    repository = InMemoryRoomRepository()
+    service, _ = build_service(
+        repository=repository,
+        password_hasher=Pbkdf2PasswordHasher(iterations=1),
+    )
+
+    with pytest.raises(InvalidRoomPasswordError) as error:
+        create_room(service, password=LONE_SURROGATE_PASSWORD)
+
+    assert LONE_SURROGATE_PASSWORD not in str(error.value)
+    assert not repository.contains_code("ABCDEFGH")
+
+
+def test_unencodable_password_rejects_join_without_room_mutation() -> None:
+    service, repository = build_service(password_hasher=Pbkdf2PasswordHasher(iterations=1))
+    created = create_room(service, password="valid password")
+    before = service.get_room_snapshot(created.room_id)
+
+    with pytest.raises(InvalidRoomPasswordError) as error:
+        join(service, created.room_code, password=LONE_SURROGATE_PASSWORD)
+
+    assert LONE_SURROGATE_PASSWORD not in str(error.value)
+    assert service.get_room_snapshot(created.room_id) == before
+    assert service.get_room_snapshot_by_code(created.room_code) == before
+    assert repository.contains_code(created.room_code)
+
+
+def test_unencodable_password_rejects_update_without_room_mutation() -> None:
+    service, repository = build_service(password_hasher=Pbkdf2PasswordHasher(iterations=1))
+    created = create_room(service)
+    before = service.get_room_snapshot(created.room_id)
+
+    with pytest.raises(InvalidRoomPasswordError) as error:
+        service.update_room_settings(
+            room_id=created.room_id,
+            actor=HOST,
+            update=RoomSettingsUpdate(password=LONE_SURROGATE_PASSWORD),
+        )
+
+    assert LONE_SURROGATE_PASSWORD not in str(error.value)
+    assert service.get_room_snapshot(created.room_id) == before
+    assert service.get_room_snapshot_by_code(created.room_code) == before
+    assert repository.contains_code(created.room_code)
 
 
 def test_only_host_can_approve_reject_kick_update_or_close() -> None:
@@ -549,6 +597,46 @@ def test_standing_retains_stack_and_reseating_ignores_new_default() -> None:
         seat_index=5,
     )
     assert reseated.seats[5].stack == 8_000
+
+
+def test_zero_stack_member_stands_and_reseats_sitting_out_without_reset() -> None:
+    service, repository = build_service()
+    created = create_room(service, approval=False)
+    join(service, created.room_code)
+    service.request_seat(room_id=created.room_id, actor=ALICE, seat_index=0)
+
+    candidate = repository.get_by_id(created.room_id).copy()
+    member = candidate.members[ALICE]
+    candidate.table.leave_seat(player_id=member.player_id)
+    candidate.table.seat_player(
+        seat_index=SeatIndex(0),
+        player_id=member.player_id,
+        stack=ChipStack(0),
+        status=ParticipationStatus.SITTING_OUT,
+    )
+    candidate.validate()
+    repository.replace(candidate)
+
+    standing = service.stand_up(room_id=created.room_id, actor=ALICE)
+    standing_alice = next(member for member in standing.members if member.guest_id == ALICE)
+    assert standing_alice.status is RoomMemberStatus.IN_ROOM
+    assert standing_alice.stack == 0
+    assert repository.get_by_id(created.room_id).members[ALICE].retained_stack == ChipStack(0)
+
+    reseated = service.request_seat(
+        room_id=created.room_id,
+        actor=ALICE,
+        seat_index=4,
+    )
+    assert reseated.seats[4].guest_id == ALICE
+    assert reseated.seats[4].stack == 0
+    reseated_room = repository.get_by_id(created.room_id)
+    occupant = reseated_room.table.seat_at(SeatIndex(4)).occupant
+    assert occupant is not None
+    assert occupant.stack == ChipStack(0)
+    assert occupant.status is ParticipationStatus.SITTING_OUT
+    assert reseated_room.members[ALICE].retained_stack is None
+    reseated_room.validate()
 
 
 def test_leave_and_kick_vacate_seats_discard_stack_and_allow_fresh_rejoin() -> None:

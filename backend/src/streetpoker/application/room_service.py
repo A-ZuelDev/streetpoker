@@ -61,7 +61,12 @@ def _validated_password_bytes(password: str) -> bytes:
         raise InvalidRoomPasswordError(
             f"A room password cannot exceed {MAX_PASSWORD_CHARACTERS} characters."
         )
-    encoded = password.encode("utf-8")
+    try:
+        encoded = password.encode("utf-8")
+    except UnicodeEncodeError:
+        raise InvalidRoomPasswordError(
+            "A room password must contain valid UTF-8 characters."
+        ) from None
     if len(encoded) > MAX_PASSWORD_BYTES:
         raise InvalidRoomPasswordError(
             f"A room password cannot exceed {MAX_PASSWORD_BYTES} UTF-8 bytes."

@@ -181,7 +181,11 @@ class RoomSettings:
             )
         if not isinstance(self.seating_approval_required, bool):
             raise InvalidRoomSettingsError("Seating approval must be a boolean.")
-        if self.max_seats != SIX_MAX_CAPACITY:
+        if (
+            not isinstance(self.max_seats, int)
+            or isinstance(self.max_seats, bool)
+            or self.max_seats != SIX_MAX_CAPACITY
+        ):
             raise InvalidRoomSettingsError("Phase 8 rooms must have exactly six seats.")
 
 
@@ -705,7 +709,11 @@ class _Room:
                 seat_index=seat_index,
                 player_id=member.player_id,
                 stack=stack,
-                status=ParticipationStatus.SITTING_IN,
+                status=(
+                    ParticipationStatus.SITTING_IN
+                    if stack.chips > 0
+                    else ParticipationStatus.SITTING_OUT
+                ),
             )
         except (SeatOccupiedError, SeatOutOfRangeError) as error:
             raise RoomSeatOccupiedError(f"Seat {seat_index.value} cannot be occupied.") from error
