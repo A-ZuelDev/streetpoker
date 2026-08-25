@@ -1,18 +1,27 @@
 # Room application boundary
 
-Phase 8 provides process-local coordination for private six-seat rooms. Code in this package is
+Phases 8 and 9A provide process-local coordination for private six-seat rooms and complete
+single-hand application lifecycle orchestration. Code in this package is
 independent of FastAPI, WebSockets, SQLAlchemy, PostgreSQL, and frontend transport models.
 
 `RoomService` is the public command boundary. Every mutation receives a `GuestId`; nicknames,
 room-specific poker `PlayerId` values, and seat numbers are never authorization identities. The
 service returns only frozen snapshots. Its private room aggregate owns membership, settings,
-pending seat requests, the guest-to-player mapping, and one authoritative `TableState`.
+pending seat requests, one authoritative `TableState`, and at most one private active `HoldemHand`.
+
+The host starts hand number `N` only when `N` equals the room's `next_hand_number`. A successful
+start consumes that number, moves the table button exactly once, and snapshots the eligible table
+occupants through `HoldemHand.start()`. Player actions compare both the hand number and an action
+sequence before mapping the acting `GuestId` to its captured `PlayerId`. Betting legality remains
+entirely in the poker domain.
 
 ## Room and seating policy
 
-Rooms are `OPEN`, `HAND_IN_PROGRESS`, or terminally `CLOSED`. Phase 8 creates only open rooms and
-can close them; it intentionally has no public transition into a hand. The active-hand status is
-present so unsafe future lifecycle mutations already have explicit guards.
+Rooms are `OPEN`, `HAND_IN_PROGRESS`, or terminally `CLOSED`. Terminal domain hands are settled in
+the same candidate transaction that produced them. Final stacks replace the participants' table
+stacks without changing seat ownership, zero-stack players become sitting out, the active hand is
+cleared, and the room returns to `OPEN`. The button remains the completed hand's anchor until the
+next successful start moves it once.
 
 Guests request a specific zero-based seat. With approval enabled, one request per guest and per
 seat remains pending for explicit host approval or rejection. Disabling approval does not alter
@@ -36,7 +45,10 @@ state. Maximum capacity is fixed at six.
 Room passwords are optional. The default hasher uses a random salt and PBKDF2-HMAC-SHA256 from the
 Python standard library, and verification uses constant-time comparison. Plaintext is never stored.
 Snapshots expose only whether password protection is enabled; they never expose salt, digest,
-iteration count, `TableState`, poker `PlayerId`, a hand aggregate, or cards.
+iteration count, `TableState`, poker `PlayerId`, or a hand aggregate. Viewer projections disclose a
+participant's own hole cards only. Opponent cards remain concealed during play and after showdown;
+host status grants no special visibility. Deck state, burns, settlement evaluations, and exact
+best-five cards never enter application projections.
 
 Eight-character room codes use `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`, normalize to uppercase, and are
 generated with `secrets`. Codes identify rooms but are not authentication. Closed-room codes remain
@@ -44,14 +56,14 @@ reserved while their rooms remain in memory.
 
 ## Atomicity and concurrency
 
-Each service mutation authorizes the original room, copies it into a candidate, mutates and
-validates the candidate, and replaces the repository entry only after success. Phase 8 table copies
-are reconstructed from public immutable seat state. The dealer button must remain unset because no
-Phase 8 operation starts gameplay or moves it; Phase 9 must revisit table cloning when it introduces
-the complete hand lifecycle.
+Each service mutation authorizes the original room, copies its table and private hand execution
+state into a candidate, mutates and validates only the candidate, builds the requested projection,
+and replaces the repository entry only after success. Terminal settlement, table reconciliation,
+active-hand clearing, and return to `OPEN` are one candidate transaction.
 
 `InMemoryRoomRepository` atomically maintains room-ID and normalized-code indexes, but it is not
-thread-safe. Phase 8 assumes callers serialize commands. Phase 9 must wrap the complete
-read/candidate/replace transaction in per-room serialization shared by all transports. A future
+thread-safe. Phase 9A assumes callers serialize the complete load, copy, command, optional terminal
+settlement, validation, and replace boundary. Phase 9B must wrap that application transaction in
+one process-local per-room async serializer shared by all transports. A future
 multi-process deployment will require a different repository/concurrency design; no locks, Redis,
 or persistence are included here.

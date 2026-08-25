@@ -23,6 +23,7 @@ from streetpoker.domain import (
     SeatIndex,
     SeededRandomSource,
     TableState,
+    settle_holdem_hand,
 )
 
 
@@ -106,6 +107,80 @@ def check_around(hand: HoldemHand) -> None:
             hand.check(player_id=actions.player_id)
         else:
             hand.call(player_id=actions.player_id)
+
+
+def play_passively_to_terminal(hand: HoldemHand) -> tuple[object, ...]:
+    results: list[object] = []
+    while not hand.snapshot.terminal:
+        actions = hand.legal_actions()
+        if ActionKind.CHECK in actions.kinds:
+            results.append(hand.check(player_id=actions.player_id))
+        else:
+            results.append(hand.call(player_id=actions.player_id))
+    return tuple(results)
+
+
+@pytest.mark.parametrize("target_phase", list(HoldemHandPhase)[:4])
+def test_copy_at_each_active_street_continues_deterministically(
+    target_phase: HoldemHandPhase,
+) -> None:
+    hand = start_hand((1_000, 1_000, 1_000), seed=17)
+    while hand.current_phase is not target_phase:
+        check_around(hand)
+    copied = hand.copy()
+    before = copied.snapshot
+
+    first_results = play_passively_to_terminal(hand)
+    assert copied.snapshot == before
+    second_results = play_passively_to_terminal(copied)
+
+    assert first_results == second_results
+    assert hand.snapshot == copied.snapshot
+    assert settle_holdem_hand(hand.snapshot) == settle_holdem_hand(copied.snapshot)
+
+
+def test_copy_preserves_fold_and_complete_by_fold_state() -> None:
+    hand = start_hand((1_000, 1_000, 1_000), seed=23)
+    actor = hand.legal_actions().player_id
+    hand.fold(player_id=actor)
+    after_fold = hand.copy()
+    assert after_fold.snapshot == hand.snapshot
+    hand.fold(player_id=hand.legal_actions().player_id)
+    assert hand.snapshot.phase is HoldemHandPhase.COMPLETE_BY_FOLD
+
+    terminal_copy = hand.copy()
+    assert terminal_copy.snapshot == hand.snapshot
+    assert settle_holdem_hand(terminal_copy.snapshot) == settle_holdem_hand(hand.snapshot)
+    assert after_fold.snapshot != hand.snapshot
+
+
+@pytest.mark.parametrize("stacks", [(1_000, 1_000, 80), (1_000, 1_000, 100)])
+def test_copy_after_short_and_full_all_in_continues_deterministically(
+    stacks: tuple[int, int, int],
+) -> None:
+    hand = start_hand(stacks, seed=29)
+    actions = hand.legal_actions()
+    hand.call(player_id=actions.player_id)
+    assert hand.participant(actions.player_id).status is HoldemParticipantStatus.ALL_IN
+    copied = hand.copy()
+
+    first_results = play_passively_to_terminal(hand)
+    second_results = play_passively_to_terminal(copied)
+
+    assert first_results == second_results
+    assert hand.snapshot == copied.snapshot
+    assert hand.snapshot.phase is HoldemHandPhase.SHOWDOWN_READY
+    assert settle_holdem_hand(hand.snapshot) == settle_holdem_hand(copied.snapshot)
+
+
+def test_copy_preserves_automatic_runout_showdown_ready_state() -> None:
+    hand = start_hand((30, 30), button=1, seed=31)
+    assert hand.snapshot.phase is HoldemHandPhase.SHOWDOWN_READY
+
+    copied = hand.copy()
+
+    assert copied.snapshot == hand.snapshot
+    assert settle_holdem_hand(copied.snapshot) == settle_holdem_hand(hand.snapshot)
 
 
 def play_decision(hand: HoldemHand, decision: int) -> None:

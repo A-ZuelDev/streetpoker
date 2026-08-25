@@ -78,6 +78,13 @@ class TableState:
     def occupied_count(self) -> int:
         return sum(not seat.is_empty for seat in self._seats)
 
+    def copy(self) -> Self:
+        """Return an independently mutable table with the exact button anchor."""
+        copied = object.__new__(type(self))
+        copied._seats = self._seats
+        copied._button_position = self._button_position
+        return copied
+
     def seat_at(self, seat_index: SeatIndex) -> Seat:
         """Return the immutable snapshot at a position within this table."""
         index = self._checked_index(seat_index)

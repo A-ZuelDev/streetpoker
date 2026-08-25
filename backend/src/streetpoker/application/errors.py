@@ -129,6 +129,42 @@ class ActiveHandMutationError(RoomApplicationError):
         super().__init__(f"Cannot {operation} while a hand is in progress.")
 
 
+class GameplayError(RoomApplicationError):
+    """Base class for expected room gameplay lifecycle failures."""
+
+
+class HandAlreadyActiveError(GameplayError):
+    """Raised when a room already owns an active hand."""
+
+
+class NoActiveHandError(GameplayError):
+    """Raised when an action requires a room's active hand."""
+
+
+class NotHandParticipantError(GameplayError):
+    """Raised when a room member did not enter the active hand."""
+
+
+class NotCurrentActorError(GameplayError):
+    """Raised when a hand participant acts outside the authoritative turn."""
+
+
+class InsufficientEligiblePlayersError(GameplayError):
+    """Raised when fewer than two table occupants can start a hand."""
+
+
+class CannotStartHandError(GameplayError):
+    """Raised when valid application state cannot initialize a domain hand."""
+
+
+class StaleHandVersionError(GameplayError):
+    """Raised when a hand number or action sequence compare-and-swap fails."""
+
+
+class GameplaySettlementError(GameplayError):
+    """Raised when terminal settlement cannot reconcile to the room table."""
+
+
 class RoomRepositoryError(RoomApplicationError):
     """Base class for in-memory repository consistency failures."""
 

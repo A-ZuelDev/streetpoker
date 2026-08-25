@@ -29,6 +29,7 @@ from streetpoker.application.errors import (
     RoomSeatOccupiedError,
     SeatRequestNotFoundError,
 )
+from streetpoker.application.gameplay import _ActiveHand, _CompletedHandRecord
 from streetpoker.domain import (
     SIX_MAX_CAPACITY,
     ChipStack,
@@ -36,6 +37,7 @@ from streetpoker.domain import (
     PlayerAlreadySeatedError,
     PlayerId,
     PlayerNotSeatedError,
+    Seat,
     SeatedPlayer,
     SeatIndex,
     SeatOccupiedError,
@@ -298,8 +300,11 @@ class _Room:
     """Private mutable candidate aggregate; only RoomService returns snapshots."""
 
     __slots__ = (
+        "active_hand",
         "host_guest_id",
+        "last_hand",
         "members",
+        "next_hand_number",
         "next_join_order",
         "password_record",
         "room_code",
@@ -329,6 +334,9 @@ class _Room:
         self.password_record = password_record
         self.status = RoomStatus.OPEN
         self.table = TableState.six_max()
+        self.active_hand: _ActiveHand | None = None
+        self.last_hand: _CompletedHandRecord | None = None
+        self.next_hand_number = 1
         self.members = {
             host_guest_id: _RoomMember(
                 guest_id=host_guest_id,
@@ -345,11 +353,7 @@ class _Room:
         self.validate()
 
     def copy(self) -> _Room:
-        """Copy valid Phase 8 room state using only public TableState operations."""
-        if self.table.button_position is not None:
-            raise InvalidRoomStateError(
-                "Phase 8 room tables cannot have a dealer button before gameplay orchestration."
-            )
+        """Copy all room and private gameplay execution state independently."""
         candidate = object.__new__(_Room)
         candidate.room_id = self.room_id
         candidate.room_code = self.room_code
@@ -357,19 +361,13 @@ class _Room:
         candidate.settings = self.settings
         candidate.password_record = self.password_record
         candidate.status = self.status
+        candidate.active_hand = None if self.active_hand is None else self.active_hand.copy()
+        candidate.last_hand = self.last_hand
+        candidate.next_hand_number = self.next_hand_number
         candidate.members = dict(self.members)
         candidate.seat_requests = dict(self.seat_requests)
         candidate.next_join_order = self.next_join_order
-        candidate.table = TableState.six_max()
-        for seat in self.table.seats:
-            occupant = seat.occupant
-            if occupant is not None:
-                candidate.table.seat_player(
-                    seat_index=seat.index,
-                    player_id=occupant.player_id,
-                    stack=occupant.stack,
-                    status=occupant.status,
-                )
+        candidate.table = self.table.copy()
         return candidate
 
     def require_actor(self, actor: GuestId) -> _RoomMember:
@@ -599,8 +597,18 @@ class _Room:
             raise InvalidRoomStateError("Room password state must be a password record or None.")
         if self.table.capacity != SIX_MAX_CAPACITY or self.settings.max_seats != SIX_MAX_CAPACITY:
             raise InvalidRoomStateError("Room and table capacity must both equal six.")
-        if self.table.button_position is not None:
-            raise InvalidRoomStateError("Phase 8 room tables cannot have a dealer button.")
+        if (
+            not isinstance(self.next_hand_number, int)
+            or isinstance(self.next_hand_number, bool)
+            or self.next_hand_number < 1
+        ):
+            raise InvalidRoomStateError("The next hand number must be a positive integer.")
+        if (self.status is RoomStatus.HAND_IN_PROGRESS) != (self.active_hand is not None):
+            raise InvalidRoomStateError(
+                "HAND_IN_PROGRESS status must correspond exactly to one active hand."
+            )
+        if self.status is RoomStatus.CLOSED and self.active_hand is not None:
+            raise InvalidRoomStateError("A closed room cannot own an active hand.")
         if self.host_guest_id not in self.members:
             raise InvalidRoomStateError("The room host must be a current member.")
         if sum(member.guest_id == self.host_guest_id for member in self.members.values()) != 1:
@@ -687,6 +695,50 @@ class _Room:
             raise InvalidRoomStateError("A room cannot exceed six occupied seats.")
         if self.status is RoomStatus.CLOSED and self.seat_requests:
             raise InvalidRoomStateError("Closed rooms cannot retain pending seat requests.")
+        self._validate_gameplay_state(member_by_player, table_by_player)
+
+    def _validate_gameplay_state(
+        self,
+        member_by_player: dict[PlayerId, _RoomMember],
+        table_by_player: dict[PlayerId, Seat],
+    ) -> None:
+        active = self.active_hand
+        if active is None:
+            if self.last_hand is not None and self.last_hand.hand_number >= self.next_hand_number:
+                raise InvalidRoomStateError("A completed hand number must already be consumed.")
+            return
+        if active.hand_number != self.next_hand_number - 1:
+            raise InvalidRoomStateError("The active hand must be the most recently consumed hand.")
+        if active.action_sequence < 0:
+            raise InvalidRoomStateError("An action sequence cannot be negative.")
+        snapshot = active.hand.snapshot
+        if snapshot.terminal:
+            raise InvalidRoomStateError("A terminal hand cannot remain active in a room.")
+        participant_ids = {item.player_id for item in snapshot.participants}
+        identity_ids = {item.player_id for item in active.identities}
+        identity_guests = {item.guest_id for item in active.identities}
+        if (
+            participant_ids != identity_ids
+            or len(identity_ids) != len(active.identities)
+            or len(identity_guests) != len(active.identities)
+        ):
+            raise InvalidRoomStateError(
+                "Active-hand participant mappings must be exact and unique."
+            )
+        for identity in active.identities:
+            member = member_by_player.get(identity.player_id)
+            seat = table_by_player.get(identity.player_id)
+            participant = active.hand.participant(identity.player_id)
+            if (
+                member is None
+                or member.guest_id != identity.guest_id
+                or member.status is not RoomMemberStatus.SEATED
+                or seat is None
+                or seat.index != participant.seat_index
+            ):
+                raise InvalidRoomStateError(
+                    "Every active participant must retain their member and table identity."
+                )
 
     @staticmethod
     def _checked_seat_index(value: int) -> SeatIndex:
