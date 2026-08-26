@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from streetpoker.domain import (
@@ -329,6 +329,45 @@ def _completed_projection(
     )
 
 
+def project_current_room_snapshot(
+    room_snapshot: RoomSnapshot,
+    active_hand: _ActiveHand | None,
+) -> RoomSnapshot:
+    """Overlay public live stacks without mutating between-hand table state."""
+    if active_hand is None:
+        return room_snapshot
+    live_stack_by_guest = {
+        active_hand.identity_for_player(participant.player_id).guest_id: (
+            participant.current_stack.chips
+        )
+        for participant in active_hand.hand.snapshot.participants
+    }
+
+    def current_stack(guest_id: GuestId | None, existing: int | None) -> int | None:
+        if guest_id is None:
+            return existing
+        live_stack = live_stack_by_guest.get(guest_id)
+        return existing if live_stack is None else live_stack
+
+    return replace(
+        room_snapshot,
+        members=tuple(
+            replace(
+                member,
+                stack=current_stack(member.guest_id, member.stack),
+            )
+            for member in room_snapshot.members
+        ),
+        seats=tuple(
+            replace(
+                seat,
+                stack=current_stack(seat.guest_id, seat.stack),
+            )
+            for seat in room_snapshot.seats
+        ),
+    )
+
+
 def project_room_view(
     room_snapshot: RoomSnapshot,
     next_hand_number: int,
@@ -337,7 +376,7 @@ def project_room_view(
     viewer: GuestId,
 ) -> RoomViewSnapshot:
     return RoomViewSnapshot(
-        room=room_snapshot,
+        room=project_current_room_snapshot(room_snapshot, active_hand),
         next_hand_number=next_hand_number,
         active_hand=(None if active_hand is None else _active_projection(active_hand, viewer)),
         last_hand=(None if last_hand is None else _completed_projection(last_hand, viewer)),

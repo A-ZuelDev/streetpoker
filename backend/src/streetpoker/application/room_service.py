@@ -30,6 +30,7 @@ from streetpoker.application.gameplay import (
     _ActiveHand,
     _HandIdentity,
     completed_hand_record,
+    project_current_room_snapshot,
     project_room_view,
 )
 from streetpoker.application.rooms import (
@@ -548,10 +549,12 @@ class RoomService:
         return self._project_view(room, viewer)
 
     def get_room_snapshot(self, room_id: RoomId) -> RoomSnapshot:
-        return self._repository.get_by_id(room_id).snapshot()
+        room = self._repository.get_by_id(room_id)
+        return project_current_room_snapshot(room.snapshot(), room.active_hand)
 
     def get_room_snapshot_by_code(self, room_code: str) -> RoomSnapshot:
-        return self._repository.get_by_code(room_code).snapshot()
+        room = self._repository.get_by_code(room_code)
+        return project_current_room_snapshot(room.snapshot(), room.active_hand)
 
     def _authorized_room(self, room_id: RoomId, actor: GuestId) -> _Room:
         room = self._repository.get_by_id(room_id)
@@ -565,7 +568,7 @@ class RoomService:
 
     def _commit(self, candidate: _Room) -> RoomSnapshot:
         candidate.validate()
-        snapshot = candidate.snapshot()
+        snapshot = project_current_room_snapshot(candidate.snapshot(), candidate.active_hand)
         self._repository.replace(candidate)
         return snapshot
 

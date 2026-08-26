@@ -272,7 +272,9 @@ def test_passive_showdown_settles_and_carries_stacks_into_next_hand() -> None:
     service.start_hand(room_id=room_id, actor=HOST, expected_hand_number=1)
     finish_passively(service, room_id)
     after_first = service.get_room_view(room_id=room_id, viewer=HOST)
-    stacks = tuple(seat.stack for seat in after_first.room.seats)
+    settled_stacks = {
+        seat.guest_id: seat.stack for seat in after_first.room.seats if seat.guest_id is not None
+    }
     assert after_first.last_hand is not None
 
     second = service.start_hand(room_id=room_id, actor=HOST, expected_hand_number=2)
@@ -281,7 +283,17 @@ def test_passive_showdown_settles_and_carries_stacks_into_next_hand() -> None:
     assert second.active_hand is not None
     assert second.active_hand.hand_number == 2
     assert second.active_hand.button_seat == 2
-    assert tuple(seat.stack for seat in second.room.seats) == stacks
+    active_guests = {player.guest_id for player in second.active_hand.players}
+    live_stacks = {
+        seat.guest_id: seat.stack for seat in second.room.seats if seat.guest_id in active_guests
+    }
+    assert live_stacks == {
+        player.guest_id: player.current_stack for player in second.active_hand.players
+    }
+    assert {
+        player.guest_id: player.current_stack + player.gross_committed
+        for player in second.active_hand.players
+    } == {guest: stack for guest, stack in settled_stacks.items() if guest in active_guests}
 
 
 def test_tied_showdown_projects_all_winner_shares_without_private_cards() -> None:
