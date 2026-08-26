@@ -310,6 +310,15 @@ class HoldemHand:
     def snapshot(self) -> HoldemHandSnapshot:
         return self._snapshot
 
+    def copy(self) -> Self:
+        """Return an independent hand preserving all private execution state."""
+        copied = object.__new__(type(self))
+        copied._snapshot = self._snapshot
+        copied._deck = self._deck.copy()
+        copied._burn_cards = self._burn_cards
+        copied._betting_round = None if self._betting_round is None else self._betting_round.copy()
+        return copied
+
     @property
     def current_phase(self) -> HoldemHandPhase:
         return self._snapshot.phase

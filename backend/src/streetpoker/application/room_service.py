@@ -8,14 +8,30 @@ from typing import Protocol
 from uuid import uuid4
 
 from streetpoker.application.errors import (
+    CannotStartHandError,
     DuplicateRoomCodeError,
     DuplicateRoomIdError,
+    GameplaySettlementError,
+    HandAlreadyActiveError,
+    InsufficientEligiblePlayersError,
     InvalidRoomPasswordError,
     InvalidRoomStateError,
+    NoActiveHandError,
+    NotCurrentActorError,
+    NotHandParticipantError,
     PlayerIdGenerationError,
     RoomCreationCollisionError,
     RoomNotFoundError,
+    StaleHandVersionError,
     WrongRoomPasswordError,
+)
+from streetpoker.application.gameplay import (
+    RoomViewSnapshot,
+    _ActiveHand,
+    _HandIdentity,
+    completed_hand_record,
+    project_current_room_snapshot,
+    project_room_view,
 )
 from streetpoker.application.rooms import (
     ROOM_CODE_ALPHABET,
@@ -26,12 +42,25 @@ from streetpoker.application.rooms import (
     RoomSettings,
     RoomSettingsUpdate,
     RoomSnapshot,
+    RoomStatus,
     SettingNotProvided,
     _PasswordRecord,
     _Room,
     normalize_room_code,
 )
-from streetpoker.domain import PlayerId
+from streetpoker.domain import (
+    ChipStack,
+    HandSettlementResult,
+    HoldemHand,
+    HoldemHandSnapshot,
+    InvalidHandInitializationError,
+    ParticipationStatus,
+    PlayerId,
+    RandomSource,
+    SeatIndex,
+    SecureRandomSource,
+    settle_holdem_hand,
+)
 
 PASSWORD_HASH_ITERATIONS = 600_000
 PASSWORD_SALT_BYTES = 16
@@ -216,8 +245,10 @@ class RoomService:
         "_code_source",
         "_password_hasher",
         "_player_id_factory",
+        "_random_source_factory",
         "_repository",
         "_room_id_factory",
+        "_settler",
     )
 
     def __init__(
@@ -228,6 +259,8 @@ class RoomService:
         password_hasher: PasswordHasher | None = None,
         room_id_factory: Callable[[], RoomId] = _new_room_id,
         player_id_factory: Callable[[], PlayerId] = _new_player_id,
+        random_source_factory: Callable[[], RandomSource] = SecureRandomSource,
+        settler: Callable[[HoldemHandSnapshot], HandSettlementResult] = settle_holdem_hand,
     ) -> None:
         self._repository = InMemoryRoomRepository() if repository is None else repository
         self._code_source = SecureRoomCodeSource() if code_source is None else code_source
@@ -236,6 +269,8 @@ class RoomService:
         )
         self._room_id_factory = room_id_factory
         self._player_id_factory = player_id_factory
+        self._random_source_factory = random_source_factory
+        self._settler = settler
 
     def create_room(
         self,
@@ -374,11 +409,152 @@ class RoomService:
         candidate.close()
         return self._commit(candidate)
 
+    def start_hand(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        expected_hand_number: int,
+    ) -> RoomViewSnapshot:
+        original = self._host_room(room_id, actor)
+        original.require_not_closed()
+        candidate = original.copy()
+        if candidate.status is RoomStatus.HAND_IN_PROGRESS:
+            raise HandAlreadyActiveError("The room already has an active hand.")
+        self._require_hand_number(
+            supplied=expected_hand_number,
+            current=candidate.next_hand_number,
+        )
+        eligible_count = sum(
+            seat.occupant is not None
+            and seat.occupant.status is ParticipationStatus.SITTING_IN
+            and seat.occupant.stack.chips > 0
+            for seat in candidate.table.seats
+        )
+        if eligible_count < 2:
+            raise InsufficientEligiblePlayersError(
+                "At least two seated, sitting-in players with chips are required."
+            )
+        candidate.table.move_button()
+        try:
+            hand = HoldemHand.start(
+                table=candidate.table,
+                small_blind=candidate.settings.small_blind,
+                big_blind=candidate.settings.big_blind,
+                random_source=self._random_source_factory(),
+            )
+        except InvalidHandInitializationError as error:
+            raise CannotStartHandError("The room table could not start a Hold'em hand.") from error
+        member_by_player = {member.player_id: member for member in candidate.members.values()}
+        identities = tuple(
+            _HandIdentity(
+                guest_id=member_by_player[participant.player_id].guest_id,
+                player_id=participant.player_id,
+                nickname=member_by_player[participant.player_id].nickname,
+            )
+            for participant in hand.snapshot.participants
+        )
+        active = _ActiveHand(expected_hand_number, 0, hand, identities)
+        candidate.active_hand = active
+        candidate.next_hand_number += 1
+        candidate.status = RoomStatus.HAND_IN_PROGRESS
+        if hand.snapshot.terminal:
+            self._complete_hand(candidate)
+        return self._commit_view(candidate, actor)
+
+    def fold(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        hand_number: int,
+        expected_action_sequence: int,
+    ) -> RoomViewSnapshot:
+        return self._act(
+            room_id=room_id,
+            actor=actor,
+            hand_number=hand_number,
+            expected_action_sequence=expected_action_sequence,
+            operation=lambda hand, player_id: hand.fold(player_id=player_id),
+        )
+
+    def check(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        hand_number: int,
+        expected_action_sequence: int,
+    ) -> RoomViewSnapshot:
+        return self._act(
+            room_id=room_id,
+            actor=actor,
+            hand_number=hand_number,
+            expected_action_sequence=expected_action_sequence,
+            operation=lambda hand, player_id: hand.check(player_id=player_id),
+        )
+
+    def call(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        hand_number: int,
+        expected_action_sequence: int,
+    ) -> RoomViewSnapshot:
+        return self._act(
+            room_id=room_id,
+            actor=actor,
+            hand_number=hand_number,
+            expected_action_sequence=expected_action_sequence,
+            operation=lambda hand, player_id: hand.call(player_id=player_id),
+        )
+
+    def bet_to(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        hand_number: int,
+        expected_action_sequence: int,
+        total: int,
+    ) -> RoomViewSnapshot:
+        return self._act(
+            room_id=room_id,
+            actor=actor,
+            hand_number=hand_number,
+            expected_action_sequence=expected_action_sequence,
+            operation=lambda hand, player_id: hand.bet_to(player_id=player_id, total=total),
+        )
+
+    def raise_to(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        hand_number: int,
+        expected_action_sequence: int,
+        total: int,
+    ) -> RoomViewSnapshot:
+        return self._act(
+            room_id=room_id,
+            actor=actor,
+            hand_number=hand_number,
+            expected_action_sequence=expected_action_sequence,
+            operation=lambda hand, player_id: hand.raise_to(player_id=player_id, total=total),
+        )
+
+    def get_room_view(self, *, room_id: RoomId, viewer: GuestId) -> RoomViewSnapshot:
+        room = self._authorized_room(room_id, viewer)
+        return self._project_view(room, viewer)
+
     def get_room_snapshot(self, room_id: RoomId) -> RoomSnapshot:
-        return self._repository.get_by_id(room_id).snapshot()
+        room = self._repository.get_by_id(room_id)
+        return project_current_room_snapshot(room.snapshot(), room.active_hand)
 
     def get_room_snapshot_by_code(self, room_code: str) -> RoomSnapshot:
-        return self._repository.get_by_code(room_code).snapshot()
+        room = self._repository.get_by_code(room_code)
+        return project_current_room_snapshot(room.snapshot(), room.active_hand)
 
     def _authorized_room(self, room_id: RoomId, actor: GuestId) -> _Room:
         room = self._repository.get_by_id(room_id)
@@ -392,9 +568,118 @@ class RoomService:
 
     def _commit(self, candidate: _Room) -> RoomSnapshot:
         candidate.validate()
-        snapshot = candidate.snapshot()
+        snapshot = project_current_room_snapshot(candidate.snapshot(), candidate.active_hand)
         self._repository.replace(candidate)
         return snapshot
+
+    def _act(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        hand_number: int,
+        expected_action_sequence: int,
+        operation: Callable[[HoldemHand, PlayerId], object],
+    ) -> RoomViewSnapshot:
+        original = self._authorized_room(room_id, actor)
+        candidate = original.copy()
+        active = candidate.active_hand
+        if active is None:
+            raise NoActiveHandError("The room has no active hand.")
+        self._require_hand_number(supplied=hand_number, current=active.hand_number)
+        if (
+            not isinstance(expected_action_sequence, int)
+            or isinstance(expected_action_sequence, bool)
+            or expected_action_sequence != active.action_sequence
+        ):
+            raise StaleHandVersionError(f"Expected action sequence {active.action_sequence}.")
+        identity = active.identity_for_guest(actor)
+        if identity is None:
+            raise NotHandParticipantError("The room member is not in the active hand.")
+        round_snapshot = active.hand.betting_round_snapshot
+        if round_snapshot is None or round_snapshot.current_player != identity.player_id:
+            current_actor = (
+                None
+                if round_snapshot is None or round_snapshot.current_player is None
+                else active.identity_for_player(round_snapshot.current_player).guest_id.value
+            )
+            raise NotCurrentActorError(
+                f"The acting guest is not current; current actor is {current_actor!r}."
+            )
+        operation(active.hand, identity.player_id)
+        active.action_sequence += 1
+        if active.hand.snapshot.terminal:
+            self._complete_hand(candidate)
+        return self._commit_view(candidate, actor)
+
+    def _complete_hand(self, candidate: _Room) -> None:
+        active = candidate.active_hand
+        if active is None or not active.hand.snapshot.terminal:
+            raise GameplaySettlementError("Only a terminal active hand can be completed.")
+        snapshot = active.hand.snapshot
+        settlement = self._settler(snapshot)
+        participant_by_id = {item.player_id: item for item in snapshot.participants}
+        settlement_by_id = {item.player_id: item for item in settlement.player_settlements}
+        identity_ids = {item.player_id for item in active.identities}
+        if (
+            set(participant_by_id) != set(settlement_by_id)
+            or set(participant_by_id) != identity_ids
+        ):
+            raise GameplaySettlementError(
+                "Settlement participants must exactly match captured hand participants."
+            )
+        if sum(item.starting_stack.chips for item in snapshot.participants) != sum(
+            item.final_stack.chips for item in settlement.player_settlements
+        ):
+            raise GameplaySettlementError("Terminal settlement must conserve participant chips.")
+        for player_id, participant in participant_by_id.items():
+            item = settlement_by_id[player_id]
+            seat = candidate.table.seat_at(participant.seat_index)
+            if (
+                item.seat_index != participant.seat_index
+                or seat.occupant is None
+                or seat.occupant.player_id != player_id
+                or seat.occupant.stack != participant.starting_stack
+            ):
+                raise GameplaySettlementError(
+                    "Settlement identity, seat, or starting stack disagrees with the room table."
+                )
+        completed = completed_hand_record(active, settlement)
+        for item in settlement.player_settlements:
+            candidate.table.leave_seat(player_id=item.player_id)
+            candidate.table.seat_player(
+                seat_index=SeatIndex(item.seat_index.value),
+                player_id=item.player_id,
+                stack=ChipStack(item.final_stack.chips),
+                status=(
+                    ParticipationStatus.SITTING_IN
+                    if item.final_stack.chips > 0
+                    else ParticipationStatus.SITTING_OUT
+                ),
+            )
+        candidate.last_hand = completed
+        candidate.active_hand = None
+        candidate.status = RoomStatus.OPEN
+
+    def _commit_view(self, candidate: _Room, viewer: GuestId) -> RoomViewSnapshot:
+        candidate.validate()
+        view = self._project_view(candidate, viewer)
+        self._repository.replace(candidate)
+        return view
+
+    def _project_view(self, room: _Room, viewer: GuestId) -> RoomViewSnapshot:
+        return project_room_view(
+            room.snapshot(),
+            room.next_hand_number,
+            room.active_hand,
+            room.last_hand,
+            viewer,
+        )
+
+    @staticmethod
+    def _require_hand_number(*, supplied: int, current: int) -> None:
+        if not isinstance(supplied, int) or isinstance(supplied, bool) or supplied != current:
+            raise StaleHandVersionError(f"Expected hand number {current}.")
 
     def _verify_join_password(self, room: _Room, password: str | None) -> None:
         record = room.password_record

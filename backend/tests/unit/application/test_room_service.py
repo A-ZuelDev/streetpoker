@@ -146,17 +146,6 @@ def join(
     )
 
 
-def mark_hand_in_progress(
-    repository: InMemoryRoomRepository,
-    room_id: RoomId,
-) -> None:
-    """Narrow white-box fixture; Phase 8 intentionally has no public transition."""
-    candidate = repository.get_by_id(room_id).copy()
-    candidate.status = RoomStatus.HAND_IN_PROGRESS
-    candidate.validate()
-    repository.replace(candidate)
-
-
 def assert_unchanged_after_error(
     service: RoomService,
     room_id: RoomId,
@@ -474,9 +463,10 @@ def test_host_uses_the_same_request_and_approval_path() -> None:
 
 
 def test_automatic_seating_assigns_immediately_only_while_open() -> None:
-    service, repository = build_service()
+    service, _ = build_service()
     created = create_room(service, approval=False)
     join(service, created.room_code)
+    join(service, created.room_code, BOB, "Bob")
 
     seated = service.request_seat(
         room_id=created.room_id,
@@ -487,7 +477,9 @@ def test_automatic_seating_assigns_immediately_only_while_open() -> None:
     assert seated.seats[3].guest_id == ALICE
 
     service.stand_up(room_id=created.room_id, actor=ALICE)
-    mark_hand_in_progress(repository, created.room_id)
+    service.request_seat(room_id=created.room_id, actor=HOST, seat_index=0)
+    service.request_seat(room_id=created.room_id, actor=BOB, seat_index=1)
+    service.start_hand(room_id=created.room_id, actor=HOST, expected_hand_number=1)
     assert_unchanged_after_error(
         service,
         created.room_id,
@@ -791,13 +783,15 @@ def test_approval_toggle_preserves_pending_requests_and_does_not_seat() -> None:
 
 
 def test_active_hand_allows_safe_lobby_changes_but_blocks_unsafe_mutations() -> None:
-    service, repository = build_service()
+    service, _ = build_service()
     created = create_room(service)
     join(service, created.room_code)
     join(service, created.room_code, BOB, "Bob")
     service.request_seat(room_id=created.room_id, actor=ALICE, seat_index=1)
     service.approve_seat_request(room_id=created.room_id, actor=HOST, target=ALICE)
-    mark_hand_in_progress(repository, created.room_id)
+    service.request_seat(room_id=created.room_id, actor=HOST, seat_index=0)
+    service.approve_seat_request(room_id=created.room_id, actor=HOST, target=HOST)
+    service.start_hand(room_id=created.room_id, actor=HOST, expected_hand_number=1)
 
     joined = service.join_room(
         room_code=created.room_code,
@@ -1007,7 +1001,7 @@ def test_repository_missing_lookup_and_dangling_index_errors_are_typed() -> None
         repository.get_by_code("abcdefgh")
 
 
-def test_phase8_candidate_copy_rejects_unexpected_dealer_button_without_domain_change() -> None:
+def test_candidate_copy_preserves_dealer_button_and_is_independent() -> None:
     room = make_internal_room(
         room_id=RoomId("room-1"),
         code="ABCDEFGH",
@@ -1027,5 +1021,10 @@ def test_phase8_candidate_copy_rejects_unexpected_dealer_button_without_domain_c
     )
     room.table.move_button()
 
-    with pytest.raises(InvalidRoomStateError, match="dealer button"):
-        room.copy()
+    copied = room.copy()
+
+    assert copied.table.button_position == room.table.button_position
+    copied.table.sit_out(player_id=room.members[HOST].player_id)
+    assert (
+        room.table.seat_at(SeatIndex(0)).occupant.status is ParticipationStatus.SITTING_IN  # type: ignore[union-attr]
+    )

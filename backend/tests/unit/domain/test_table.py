@@ -76,6 +76,47 @@ def test_new_six_max_table_has_six_ordered_empty_seats_and_no_button() -> None:
     assert table.button_position is None
 
 
+def test_copy_preserves_empty_unset_table_and_is_independent() -> None:
+    table = TableState.six_max()
+    copied = table.copy()
+
+    assert observable_state(copied) == observable_state(table)
+    seat_player(table, 1, 1)
+    assert copied.occupied_count == 0
+    seat_player(copied, 4, 2)
+    assert table.find_player(player_id(2)) is None
+
+
+def test_copy_preserves_sparse_seats_status_stacks_and_established_button() -> None:
+    table = TableState.six_max()
+    seat_player(table, 1, 1, chips=250)
+    seat_player(table, 3, 2, chips=0, status=ParticipationStatus.SITTING_OUT)
+    seat_player(table, 5, 3, chips=400, status=ParticipationStatus.SITTING_OUT)
+    assert table.move_button() == SeatIndex(1)
+    copied = table.copy()
+
+    assert observable_state(copied) == observable_state(table)
+    table.sit_out(player_id=player_id(1))
+    assert copied.seat_at(SeatIndex(1)).occupant.status is ParticipationStatus.SITTING_IN  # type: ignore[union-attr]
+    copied.leave_seat(player_id=player_id(3))
+    assert table.find_player(player_id(3)) == SeatIndex(5)
+
+
+def test_copy_preserves_vacant_former_button_anchor_and_is_independent() -> None:
+    table = TableState.six_max()
+    seat_player(table, 1, 1)
+    seat_player(table, 4, 2)
+    assert table.move_button() == SeatIndex(1)
+    table.leave_seat(player_id=player_id(1))
+    copied = table.copy()
+
+    assert observable_state(copied) == observable_state(table)
+    assert copied.move_button() == SeatIndex(4)
+    assert table.button_position == SeatIndex(1)
+    seat_player(table, 2, 3)
+    assert copied.find_player(player_id(3)) is None
+
+
 @pytest.mark.parametrize("value", [-1, -100, True, False, 1.5, "1", None])
 def test_seat_index_rejects_negative_bool_and_non_integer_values(value: object) -> None:
     with pytest.raises(InvalidSeatIndexError):
