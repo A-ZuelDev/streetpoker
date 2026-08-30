@@ -1,5 +1,6 @@
 """FastAPI WebSocket endpoint for one-room realtime sessions."""
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import Any, Final, cast
@@ -17,6 +18,7 @@ from streetpoker.api.schemas.realtime import (
 router = APIRouter(tags=["realtime"])
 
 MAX_CLIENT_MESSAGE_BYTES: Final = 64 * 1024
+HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 COMMAND_TYPES: Final = frozenset(
     {
         "start_hand",
@@ -113,8 +115,17 @@ async def room_websocket(websocket: WebSocket, room_code: str) -> None:
     session: SocketSession | None = None
     try:
         try:
-            raw_connect = await _receive_json_value(websocket)
+            async with asyncio.timeout(HANDSHAKE_TIMEOUT_SECONDS):
+                raw_connect = await _receive_json_value(websocket)
             connect = connect_request_adapter.validate_python(raw_connect)
+        except TimeoutError:
+            await _send_connection_error(
+                websocket,
+                code="handshake_timeout",
+                message="The connection handshake timed out.",
+                close_code=1008,
+            )
+            return
         except ValueError, ValidationError:
             await _send_connection_error(
                 websocket,

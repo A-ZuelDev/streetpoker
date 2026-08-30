@@ -6,7 +6,7 @@ import asyncio
 import base64
 import hashlib
 import logging
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Final
@@ -48,7 +48,10 @@ from streetpoker.application import (
     HandAlreadyActiveError,
     HostCannotLeaveRoomError,
     InsufficientEligiblePlayersError,
+    InvalidGuestIdError,
     InvalidNicknameError,
+    InvalidRoomCodeError,
+    InvalidRoomNameError,
     InvalidRoomPasswordError,
     InvalidRoomSeatError,
     InvalidRoomSettingsError,
@@ -140,6 +143,26 @@ def derive_guest_id(guest_token: str) -> GuestId:
     if len(raw) != 32 or canonical != guest_token:
         raise ValueError("Guest token must canonically encode 32 bytes.")
     return GuestId(f"guest_{hashlib.sha256(raw).hexdigest()}")
+
+
+async def _run_serialized_in_thread[**P, T](
+    operation: Callable[P, T],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> T:
+    """Keep an enclosing room lock effective until a worker transaction finishes."""
+    worker = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        raise
 
 
 class ConnectionRegistry:
@@ -294,7 +317,10 @@ _SAFE_APPLICATION_ERRORS: dict[type[BaseException], SafeError] = {
     InsufficientEligiblePlayersError: SafeError(
         "insufficient_players", "At least two eligible players are required."
     ),
+    InvalidGuestIdError: SafeError("invalid_guest_id", "The guest identifier is invalid."),
     InvalidNicknameError: SafeError("invalid_nickname", "The nickname is invalid."),
+    InvalidRoomCodeError: SafeError("invalid_room_code", "The room code is invalid."),
+    InvalidRoomNameError: SafeError("invalid_room_name", "The room name is invalid."),
     InvalidRoomPasswordError: SafeError("invalid_room_password", "The room password is invalid."),
     InvalidRoomSeatError: SafeError("invalid_seat", "The requested seat is invalid."),
     InvalidRoomSettingsError: SafeError("invalid_settings", "The room settings are invalid."),
@@ -401,7 +427,8 @@ class RealtimeRoomCoordinator:
                                 "A nickname is required to join this room.",
                             )
                         ) from None
-                    self._room_service.join_room(
+                    await _run_serialized_in_thread(
+                        self._room_service.join_room,
                         room_code=room_code,
                         actor=guest_id,
                         nickname=request.nickname,
@@ -444,7 +471,7 @@ class RealtimeRoomCoordinator:
             if not self.registry.is_registered(session):
                 return
             try:
-                self._dispatch(session, command)
+                await self._dispatch(session, command)
             except (RoomApplicationError, PokerDomainError) as error:
                 translated = safe_error(error)
                 if translated.code == "internal_error":
@@ -583,7 +610,7 @@ class RealtimeRoomCoordinator:
             return
         self.registry.enqueue(session, StateMessage(snapshot=room_view_dto(view)))
 
-    def _dispatch(self, session: SocketSession, command: ClientCommand) -> None:
+    async def _dispatch(self, session: SocketSession, command: ClientCommand) -> None:
         if isinstance(command, StartHandCommand):
             self._room_service.start_hand(
                 room_id=session.room_id,
@@ -656,11 +683,20 @@ class RealtimeRoomCoordinator:
                 target=GuestId(command.target_guest_id),
             )
         elif isinstance(command, UpdateSettingsCommand):
-            self._room_service.update_room_settings(
-                room_id=session.room_id,
-                actor=session.guest_id,
-                update=self._settings_update(command),
-            )
+            update = self._settings_update(command)
+            if "password" in command.model_fields_set:
+                await _run_serialized_in_thread(
+                    self._room_service.update_room_settings,
+                    room_id=session.room_id,
+                    actor=session.guest_id,
+                    update=update,
+                )
+            else:
+                self._room_service.update_room_settings(
+                    room_id=session.room_id,
+                    actor=session.guest_id,
+                    update=update,
+                )
         elif isinstance(command, CloseRoomCommand):
             self._room_service.close_room(room_id=session.room_id, actor=session.guest_id)
 

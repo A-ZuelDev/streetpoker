@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import threading
 from typing import cast
 
 import pytest
@@ -7,6 +8,7 @@ from fastapi import WebSocket
 from pydantic import ValidationError
 
 from streetpoker.api.realtime import (
+    ConnectionFailure,
     ConnectionRegistry,
     RealtimeRoomCoordinator,
     SafeError,
@@ -18,6 +20,7 @@ from streetpoker.api.schemas.realtime import (
     CloseRoomCommand,
     CommandAckMessage,
     ConnectionErrorMessage,
+    ConnectRequest,
     RequestSeatCommand,
     UpdateSettingsCommand,
     client_command_adapter,
@@ -25,12 +28,16 @@ from streetpoker.api.schemas.realtime import (
 )
 from streetpoker.application import (
     GuestId,
+    InvalidGuestIdError,
+    InvalidRoomCodeError,
+    InvalidRoomNameError,
     Pbkdf2PasswordHasher,
     RoomId,
     RoomService,
     RoomSettings,
     StaleHandVersionError,
 )
+from streetpoker.application.rooms import _PasswordRecord
 from streetpoker.domain import ActionKind, PlayerId, SeededRandomSource
 
 
@@ -41,6 +48,34 @@ def token(fill: int) -> str:
 class FixedCodeSource:
     def next_code(self) -> str:
         return "ABCDEFGH"
+
+
+class SequenceCodeSource:
+    def __init__(self, *codes: str) -> None:
+        self._codes = iter(codes)
+
+    def next_code(self) -> str:
+        return next(self._codes)
+
+
+class ThreadRecordingHasher:
+    def __init__(self) -> None:
+        self._delegate = Pbkdf2PasswordHasher(iterations=1)
+        self.hash_threads: list[int] = []
+        self.verify_threads: list[int] = []
+        self.verify_started = threading.Event()
+        self.verify_release = threading.Event()
+        self.verify_release.set()
+
+    def hash_password(self, password: str) -> _PasswordRecord:
+        self.hash_threads.append(threading.get_ident())
+        return self._delegate.hash_password(password)
+
+    def verify_password(self, password: str, record: _PasswordRecord) -> bool:
+        self.verify_threads.append(threading.get_ident())
+        self.verify_started.set()
+        self.verify_release.wait()
+        return self._delegate.verify_password(password, record)
 
 
 def built_service(*, approval: bool = False) -> tuple[RoomService, RoomId, dict[str, GuestId]]:
@@ -73,6 +108,22 @@ def built_service(*, approval: bool = False) -> tuple[RoomService, RoomId, dict[
         ),
     )
     return service, created.room_id, guests
+
+
+def service_with_hasher(
+    hasher: ThreadRecordingHasher,
+    *,
+    codes: tuple[str, ...] = ("ABCDEFGH",),
+) -> RoomService:
+    room_ids = iter(f"thread-room-{index}" for index in range(1, len(codes) + 1))
+    player_ids = iter(f"thread-player-{index}" for index in range(1, 20))
+    return RoomService(
+        code_source=SequenceCodeSource(*codes),
+        room_id_factory=lambda: RoomId(next(room_ids)),
+        player_id_factory=lambda: PlayerId(next(player_ids)),
+        password_hasher=hasher,
+        random_source_factory=lambda: SeededRandomSource(47),
+    )
 
 
 class RecordingWebSocket:
@@ -211,6 +262,246 @@ def test_expected_errors_have_stable_sanitized_messages() -> None:
     )
     assert "private" not in translated.message
     assert "secret" not in translated.message
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (
+            InvalidRoomCodeError("private path C:\\secret"),
+            SafeError("invalid_room_code", "The room code is invalid."),
+        ),
+        (
+            InvalidRoomNameError("private path C:\\secret"),
+            SafeError("invalid_room_name", "The room name is invalid."),
+        ),
+        (
+            InvalidGuestIdError("private path C:\\secret"),
+            SafeError("invalid_guest_id", "The guest identifier is invalid."),
+        ),
+    ],
+)
+def test_client_validation_errors_have_fixed_safe_translations(
+    error: Exception,
+    expected: SafeError,
+) -> None:
+    translated = safe_error(error)
+
+    assert translated == expected
+    assert translated.code != "internal_error"
+    assert "private" not in translated.message
+    assert "secret" not in translated.message
+
+
+def test_password_join_succeeds_and_wrong_password_is_safe_off_event_loop_thread() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher)
+        host_token = token(21)
+        alice_token = token(22)
+        host = derive_guest_id(host_token)
+        created = service.create_room(
+            actor=host,
+            nickname="Host",
+            settings=RoomSettings(room_name="Threaded Join"),
+            password="correct",
+        )
+        hasher.verify_threads.clear()
+        coordinator = RealtimeRoomCoordinator(service)
+        event_loop_thread = threading.get_ident()
+
+        with pytest.raises(ConnectionFailure) as caught:
+            await coordinator.bind(
+                cast(WebSocket, RecordingWebSocket()),
+                created.room_code,
+                ConnectRequest(
+                    type="connect",
+                    guest_token=alice_token,
+                    nickname="Alice",
+                    password="wrong",
+                ),
+            )
+        assert caught.value.error == SafeError(
+            "wrong_room_password", "The room credentials were rejected."
+        )
+        assert hasher.verify_threads[-1] != event_loop_thread
+
+        session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            created.room_code,
+            ConnectRequest(
+                type="connect",
+                guest_token=alice_token,
+                nickname="Alice",
+                password="correct",
+            ),
+        )
+
+        assert hasher.verify_threads[-1] != event_loop_thread
+        assert derive_guest_id(alice_token) in {
+            member.guest_id for member in service.get_room_snapshot(created.room_id).members
+        }
+        await coordinator.disconnect(session)
+
+    asyncio.run(scenario())
+
+
+def test_threaded_password_join_keeps_same_room_serialized() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher)
+        host_token = token(23)
+        alice_token = token(24)
+        host = derive_guest_id(host_token)
+        created = service.create_room(
+            actor=host,
+            nickname="Host",
+            settings=RoomSettings(room_name="Same Room", seating_approval_required=False),
+            password="correct",
+        )
+        coordinator = RealtimeRoomCoordinator(service)
+        host_session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            created.room_code,
+            ConnectRequest(type="connect", guest_token=host_token),
+        )
+        hasher.verify_started.clear()
+        hasher.verify_release.clear()
+        join_task = asyncio.create_task(
+            coordinator.bind(
+                cast(WebSocket, RecordingWebSocket()),
+                created.room_code,
+                ConnectRequest(
+                    type="connect",
+                    guest_token=alice_token,
+                    nickname="Alice",
+                    password="correct",
+                ),
+            )
+        )
+        try:
+            assert await asyncio.to_thread(hasher.verify_started.wait, 1.0)
+            command_task = asyncio.create_task(
+                coordinator.handle_command(
+                    host_session,
+                    RequestSeatCommand(
+                        type="request_seat",
+                        command_id="same-room",
+                        seat_index=1,
+                    ),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not command_task.done()
+        finally:
+            hasher.verify_release.set()
+
+        alice_session = await join_task
+        await command_task
+        assert service.get_room_snapshot(created.room_id).seats[1].guest_id == host
+        await coordinator.disconnect(alice_session)
+        await coordinator.disconnect(host_session)
+
+    asyncio.run(scenario())
+
+
+def test_other_room_progresses_while_password_join_runs_in_worker() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher, codes=("ABCDEFGH", "BCDEFGHJ"))
+        host_token = token(25)
+        alice_token = token(26)
+        host = derive_guest_id(host_token)
+        protected = service.create_room(
+            actor=host,
+            nickname="Host One",
+            settings=RoomSettings(room_name="Protected"),
+            password="correct",
+        )
+        other = service.create_room(
+            actor=host,
+            nickname="Host Two",
+            settings=RoomSettings(room_name="Other", seating_approval_required=False),
+        )
+        coordinator = RealtimeRoomCoordinator(service)
+        other_session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            other.room_code,
+            ConnectRequest(type="connect", guest_token=host_token),
+        )
+        hasher.verify_started.clear()
+        hasher.verify_release.clear()
+        join_task = asyncio.create_task(
+            coordinator.bind(
+                cast(WebSocket, RecordingWebSocket()),
+                protected.room_code,
+                ConnectRequest(
+                    type="connect",
+                    guest_token=alice_token,
+                    nickname="Alice",
+                    password="correct",
+                ),
+            )
+        )
+        try:
+            assert await asyncio.to_thread(hasher.verify_started.wait, 1.0)
+            await asyncio.wait_for(
+                coordinator.handle_command(
+                    other_session,
+                    RequestSeatCommand(
+                        type="request_seat",
+                        command_id="other-room",
+                        seat_index=4,
+                    ),
+                ),
+                timeout=1.0,
+            )
+            assert service.get_room_snapshot(other.room_id).seats[4].guest_id == host
+        finally:
+            hasher.verify_release.set()
+
+        alice_session = await join_task
+        await coordinator.disconnect(alice_session)
+        await coordinator.disconnect(other_session)
+
+    asyncio.run(scenario())
+
+
+def test_password_settings_hash_runs_off_event_loop_thread() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher)
+        host_token = token(27)
+        host = derive_guest_id(host_token)
+        created = service.create_room(
+            actor=host,
+            nickname="Host",
+            settings=RoomSettings(room_name="Settings"),
+        )
+        coordinator = RealtimeRoomCoordinator(service)
+        session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            created.room_code,
+            ConnectRequest(type="connect", guest_token=host_token),
+        )
+        hasher.hash_threads.clear()
+        event_loop_thread = threading.get_ident()
+
+        await coordinator.handle_command(
+            session,
+            UpdateSettingsCommand(
+                type="update_settings",
+                command_id="password",
+                password="replacement",
+            ),
+        )
+
+        assert len(hasher.hash_threads) == 1
+        assert hasher.hash_threads[0] != event_loop_thread
+        assert service.get_room_snapshot(created.room_id).settings.password_protected
+        await coordinator.disconnect(session)
+
+    asyncio.run(scenario())
 
 
 def test_registry_drains_ordered_messages_before_explicit_close() -> None:

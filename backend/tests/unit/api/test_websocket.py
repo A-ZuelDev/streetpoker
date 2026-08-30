@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from streetpoker.api.app import create_app
 from streetpoker.api.realtime import derive_guest_id
+from streetpoker.api.routes import realtime as realtime_route
 from streetpoker.application import (
     GuestId,
     Pbkdf2PasswordHasher,
@@ -141,6 +142,60 @@ def test_missing_room_and_invalid_handshake_are_typed_and_closed() -> None:
                 invalid.receive_json()
 
 
+def test_invalid_room_code_is_a_safe_client_error() -> None:
+    service, _, tokens, _ = built_service()
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/foo") as socket:
+        socket.send_json({"type": "connect", "guest_token": tokens["host"]})
+        error = socket.receive_json()
+        with pytest.raises(WebSocketDisconnect):
+            socket.receive_json()
+
+    assert error == {
+        "type": "connection_error",
+        "code": "invalid_room_code",
+        "message": "The room code is invalid.",
+    }
+
+
+def test_initial_handshake_timeout_closes_without_registration_or_membership_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, room_id, _, _ = built_service()
+    before = service.get_room_snapshot(room_id)
+    app = create_app(room_service=service)
+    coordinator = app.state.realtime_coordinator
+    monkeypatch.setattr(realtime_route, "HANDSHAKE_TIMEOUT_SECONDS", 0.01)
+
+    with TestClient(app) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as socket:
+        error = socket.receive_json()
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_json()
+
+        assert coordinator.registry.all_sessions(room_id) == ()
+
+    assert error == {
+        "type": "connection_error",
+        "code": "handshake_timeout",
+        "message": "The connection handshake timed out.",
+    }
+    assert closed.value.code == 1008
+    assert service.get_room_snapshot(room_id) == before
+
+
+def test_normal_handshake_completes_with_timeout_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _, tokens, _ = built_service()
+    monkeypatch.setattr(realtime_route, "HANDSHAKE_TIMEOUT_SECONDS", 0.5)
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as socket:
+        connected, state = handshake(socket, tokens["host"])
+
+    assert connected["type"] == "connected"
+    assert state["type"] == "state"
+
+
 def test_handshake_joins_new_member_and_never_echoes_password_or_token() -> None:
     service, _, tokens, guests = built_service(password="alpha")
 
@@ -217,6 +272,47 @@ def test_protocol_errors_are_typed_sanitized_and_connection_can_continue() -> No
         assert "secret" not in str(invalid)
         socket.send_json({"type": "request_seat", "command_id": "valid", "seat_index": 3})
         receive_ack_and_state(socket, "valid")
+
+
+def test_application_validation_errors_are_client_errors_not_internal_faults(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    service, _, tokens, _ = built_service()
+    invalid_name = "private-path-" + "x" * 61
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as socket:
+        handshake(socket, tokens["host"])
+        socket.send_json(
+            {
+                "type": "update_settings",
+                "command_id": "bad-name",
+                "room_name": invalid_name,
+            }
+        )
+        name_error = socket.receive_json()
+        socket.send_json(
+            {
+                "type": "kick",
+                "command_id": "bad-guest",
+                "target_guest_id": "   ",
+            }
+        )
+        guest_error = socket.receive_json()
+
+    assert name_error == {
+        "type": "command_error",
+        "command_id": "bad-name",
+        "code": "invalid_room_name",
+        "message": "The room name is invalid.",
+    }
+    assert guest_error == {
+        "type": "command_error",
+        "command_id": "bad-guest",
+        "code": "invalid_guest_id",
+        "message": "The guest identifier is invalid.",
+    }
+    assert invalid_name not in str(name_error)
+    assert "Internal realtime command failure" not in caplog.text
 
 
 def test_start_and_every_gameplay_action_route_with_authoritative_versions() -> None:
