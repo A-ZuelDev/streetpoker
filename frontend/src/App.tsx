@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { fetchHealth } from './api/health';
+import { demoTableForVariant } from './features/table/demoTable.fixture';
+import { TableScreen } from './features/table/TableScreen';
 
 export function App() {
   const health = useQuery({
@@ -8,28 +10,18 @@ export function App() {
     queryFn: ({ signal }) => fetchHealth(signal),
   });
 
-  const status = health.isPending
-    ? 'Checking backend...'
+  const backendStatus = health.isPending
+    ? 'checking'
     : health.isSuccess
-      ? 'Backend connected'
-      : 'Backend unavailable';
+      ? 'online'
+      : 'offline';
+
+  const demoVariant = new URLSearchParams(window.location.search).get('demo');
 
   return (
-    <main>
-      <section className="hero" aria-labelledby="page-title">
-        <p className="eyebrow">Phase 0 - Foundation</p>
-        <h1 id="page-title">StreetPoker</h1>
-        <p className="lede">
-          A server-authoritative, browser-based play-money poker platform.
-        </p>
-        <div className="status-card" aria-live="polite">
-          <span
-            className={`status-dot ${health.isSuccess ? 'status-dot--online' : ''}`}
-            aria-hidden="true"
-          />
-          <span>{status}</span>
-        </div>
-      </section>
-    </main>
+    <TableScreen
+      table={demoTableForVariant(demoVariant)}
+      backendStatus={backendStatus}
+    />
   );
 }
