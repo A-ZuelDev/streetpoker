@@ -14,10 +14,11 @@ function renderApp() {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  window.history.replaceState({}, '', '/');
 });
 
 describe('App', () => {
-  it('shows the project identity and a healthy backend', async () => {
+  it('shows the active demo table and backend health independently', async () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -31,14 +32,32 @@ describe('App', () => {
     expect(
       screen.getByRole('heading', { name: 'StreetPoker' }),
     ).toBeInTheDocument();
-    expect(await screen.findByText('Backend connected')).toBeInTheDocument();
+    expect(screen.getByText('Demo table')).toBeInTheDocument();
+    expect(
+      screen.getByRole('region', { name: 'Six-max poker table' }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('Backend online')).toBeInTheDocument();
   });
 
-  it('reports an unavailable backend without crashing', async () => {
+  it('reports backend health failure without implying the table is live', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
 
     renderApp();
 
-    expect(await screen.findByText('Backend unavailable')).toBeInTheDocument();
+    expect(await screen.findByText('Backend offline')).toBeInTheDocument();
+    expect(screen.getByText('Demo table')).toBeInTheDocument();
+    expect(screen.queryByText(/websocket/i)).not.toBeInTheDocument();
+  });
+
+  it('selects the open demo from the query string', () => {
+    window.history.replaceState({}, '', '/?demo=open');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+
+    renderApp();
+
+    expect(screen.getByText('Table ready')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Start hand' }),
+    ).toBeInTheDocument();
   });
 });
