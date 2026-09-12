@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 
 import { fetchHealth } from './api/health';
+import { LiveRoomSession } from './features/session/LiveRoomSession';
 import { demoTableForVariant } from './features/table/demoTable.fixture';
 import { TableScreen } from './features/table/TableScreen';
 
-export function App() {
+function DemoApp({ variant }: { variant: 'active' | 'open' }) {
   const health = useQuery({
     queryKey: ['health'],
     queryFn: ({ signal }) => fetchHealth(signal),
@@ -16,12 +17,20 @@ export function App() {
       ? 'online'
       : 'offline';
 
-  const demoVariant = new URLSearchParams(window.location.search).get('demo');
-
   return (
     <TableScreen
-      table={demoTableForVariant(demoVariant)}
+      table={demoTableForVariant(variant)}
       backendStatus={backendStatus}
     />
   );
+}
+
+export function App() {
+  const demoVariant = new URLSearchParams(window.location.search).get('demo');
+
+  if (demoVariant === 'active' || demoVariant === 'open') {
+    return <DemoApp variant={demoVariant} />;
+  }
+
+  return <LiveRoomSession />;
 }

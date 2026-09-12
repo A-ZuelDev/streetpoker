@@ -82,7 +82,7 @@ async function expectHeroCardsTuckedBehindPod(page: Page) {
 test('loads the active poker shell without horizontal overflow', async ({
   page,
 }, testInfo) => {
-  await page.goto('/');
+  await page.goto('/?demo=active');
 
   await expect(
     page.getByRole('heading', { name: 'StreetPoker' }),
@@ -296,7 +296,7 @@ test('uses the full stage width under the 1120px overlay breakpoint', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 1024, height: 768 });
-  await page.goto('/');
+  await page.goto('/?demo=active');
   await expect(page.getByText('Backend online')).toBeVisible();
 
   const stage = page.getByRole('region', { name: 'Six-max poker table' });
@@ -355,7 +355,7 @@ test('keeps the overlay above a wrapped action bar', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 900, height: 768 });
-  await page.goto('/');
+  await page.goto('/?demo=active');
   await expect(page.getByText('Backend online')).toBeVisible();
 
   const panel = page.getByRole('complementary', { name: 'Room tools' });
@@ -394,7 +394,7 @@ test('keeps critical table content reachable at phone width', async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 448, height: 800 });
-  await page.goto('/');
+  await page.goto('/?demo=active');
   await expect(page.getByText('Backend online')).toBeVisible();
 
   const panel = page.getByRole('complementary', { name: 'Room tools' });
@@ -462,7 +462,7 @@ test('keeps the hero and board clear at short phone sizes', async ({
     { width: 320, height: 568 },
   ]) {
     await page.setViewportSize(viewport);
-    await page.goto('/');
+    await page.goto('/?demo=active');
     await expect(page.getByText('Backend online')).toBeVisible();
 
     const panel = page.getByRole('complementary', { name: 'Room tools' });

@@ -19,7 +19,7 @@ export interface CardView {
 }
 
 export type PlayerState =
-  'active' | 'seated' | 'folded' | 'all-in' | 'sitting-out';
+  'active' | 'seated' | 'folded' | 'all-in' | 'sitting-out' | 'not-in-hand';
 
 export type BlindMarker = 'small-blind' | 'big-blind';
 
@@ -85,8 +85,10 @@ export interface RoomPanelView {
   canStartHand: boolean;
 }
 
-export interface TableDemoView {
+export interface TableView {
+  mode: 'demo' | 'live';
   variant: DemoVariant;
+  isHandActive: boolean;
   roomName: string;
   roomCode: string;
   smallBlind: number;
@@ -98,5 +100,7 @@ export interface TableDemoView {
   seats: readonly SeatView[];
   legalActions: LegalActionsView | null;
   roomPanel: RoomPanelView;
-  chat: readonly ChatMessageView[];
+  chat: readonly ChatMessageView[] | null;
 }
+
+export type TableDemoView = TableView;

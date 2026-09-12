@@ -5,7 +5,8 @@ import type { ChatMessageView, RoomPanelView } from '../table/table.types';
 
 interface RoomPanelProps {
   panel: RoomPanelView;
-  chat: readonly ChatMessageView[];
+  chat: readonly ChatMessageView[] | null;
+  mode: 'demo' | 'live';
   isOpen: boolean;
   onToggle: () => void;
 }
@@ -61,10 +62,18 @@ function CollapsibleRoomSection({
   );
 }
 
-export function RoomPanel({ panel, chat, isOpen, onToggle }: RoomPanelProps) {
+export function RoomPanel({
+  panel,
+  chat,
+  mode,
+  isOpen,
+  onToggle,
+}: RoomPanelProps) {
   const requestCount = panel.seatRequests.length;
   const [draft, setDraft] = useState('');
-  const [messages, setMessages] = useState<readonly ChatMessageView[]>(chat);
+  const [messages, setMessages] = useState<readonly ChatMessageView[]>(
+    chat ?? [],
+  );
 
   const submitDemoMessage = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -145,79 +154,85 @@ export function RoomPanel({ panel, chat, isOpen, onToggle }: RoomPanelProps) {
                       <strong>{request.nickname}</strong>
                       <span>Seat {request.seatIndex + 1}</span>
                     </div>
-                    <div className="request-actions">
-                      <button type="button" title="Demo only">
-                        Approve
-                      </button>
-                      <button
-                        className="request-actions__reject"
-                        type="button"
-                        title="Demo only"
-                      >
-                        Reject
-                      </button>
-                    </div>
+                    {mode === 'demo' ? (
+                      <div className="request-actions">
+                        <button type="button" title="Demo only">
+                          Approve
+                        </button>
+                        <button
+                          className="request-actions__reject"
+                          type="button"
+                          title="Demo only"
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ) : null}
                   </li>
                 ))}
               </ul>
             )}
           </CollapsibleRoomSection>
 
-          <CollapsibleRoomSection
-            id="chat"
-            title="Chat"
-            meta="Demo"
-            className="room-panel__chat"
-          >
-            <ol className="chat-list" aria-label="Recent chat messages">
-              {messages.map((chatMessage) => (
-                <li key={chatMessage.id} className="chat-message">
-                  <div className="chat-message__meta">
-                    <strong>{chatMessage.sender}</strong>
-                    <time>{chatMessage.timestamp}</time>
-                  </div>
-                  <p>{chatMessage.message}</p>
-                </li>
-              ))}
-            </ol>
-            <form className="chat-compose" onSubmit={submitDemoMessage}>
-              <label className="sr-only" htmlFor="demo-chat-message">
-                Chat message
-              </label>
-              <input
-                id="demo-chat-message"
-                type="text"
-                value={draft}
-                placeholder="Say something..."
-                autoComplete="off"
-                onChange={(event) => setDraft(event.currentTarget.value)}
-              />
-              <button type="submit" disabled={draft.trim().length === 0}>
-                Send
-              </button>
-            </form>
-          </CollapsibleRoomSection>
+          {mode === 'demo' ? (
+            <CollapsibleRoomSection
+              id="chat"
+              title="Chat"
+              meta="Demo"
+              className="room-panel__chat"
+            >
+              <ol className="chat-list" aria-label="Recent chat messages">
+                {messages.map((chatMessage) => (
+                  <li key={chatMessage.id} className="chat-message">
+                    <div className="chat-message__meta">
+                      <strong>{chatMessage.sender}</strong>
+                      <time>{chatMessage.timestamp}</time>
+                    </div>
+                    <p>{chatMessage.message}</p>
+                  </li>
+                ))}
+              </ol>
+              <form className="chat-compose" onSubmit={submitDemoMessage}>
+                <label className="sr-only" htmlFor="demo-chat-message">
+                  Chat message
+                </label>
+                <input
+                  id="demo-chat-message"
+                  type="text"
+                  value={draft}
+                  placeholder="Say something..."
+                  autoComplete="off"
+                  onChange={(event) => setDraft(event.currentTarget.value)}
+                />
+                <button type="submit" disabled={draft.trim().length === 0}>
+                  Send
+                </button>
+              </form>
+            </CollapsibleRoomSection>
+          ) : null}
 
-          <CollapsibleRoomSection
-            id="host-controls"
-            title="Host controls"
-            className="room-panel__host-controls"
-            defaultOpen={false}
-          >
-            <div className="host-controls-grid">
-              <button type="button" disabled title="Demo only">
-                Room settings
-              </button>
-              <button
-                className="room-panel__danger"
-                type="button"
-                disabled
-                title="Demo only"
-              >
-                Close room
-              </button>
-            </div>
-          </CollapsibleRoomSection>
+          {mode === 'demo' ? (
+            <CollapsibleRoomSection
+              id="host-controls"
+              title="Host controls"
+              className="room-panel__host-controls"
+              defaultOpen={false}
+            >
+              <div className="host-controls-grid">
+                <button type="button" disabled title="Demo only">
+                  Room settings
+                </button>
+                <button
+                  className="room-panel__danger"
+                  type="button"
+                  disabled
+                  title="Demo only"
+                >
+                  Close room
+                </button>
+              </div>
+            </CollapsibleRoomSection>
+          ) : null}
         </div>
       ) : null}
     </aside>

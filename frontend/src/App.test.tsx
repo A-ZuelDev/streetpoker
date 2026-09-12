@@ -19,6 +19,7 @@ afterEach(() => {
 
 describe('App', () => {
   it('shows the active demo table and backend health independently', async () => {
+    window.history.replaceState({}, '', '/?demo=active');
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -40,6 +41,7 @@ describe('App', () => {
   });
 
   it('reports backend health failure without implying the table is live', async () => {
+    window.history.replaceState({}, '', '/?demo=active');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
 
     renderApp();
@@ -58,6 +60,28 @@ describe('App', () => {
     expect(screen.getByText('Table ready')).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'Start hand' }),
+    ).toBeInTheDocument();
+  });
+
+  it('uses live room entry for the normal route and unknown demo values', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const view = renderApp();
+
+    expect(
+      screen.getByRole('heading', { name: 'Create a room' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Join a room' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Demo table')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    window.history.replaceState({}, '', '/?demo=future');
+    view.unmount();
+    renderApp();
+    expect(
+      screen.getByRole('heading', { name: 'Create a room' }),
     ).toBeInTheDocument();
   });
 });

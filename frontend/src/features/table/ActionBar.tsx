@@ -4,9 +4,11 @@ import { formatChips } from './formatChips';
 import type { LegalActionsView, OccupiedSeatView } from './table.types';
 
 interface ActionBarProps {
-  hero: OccupiedSeatView;
+  hero: OccupiedSeatView | null;
   legalActions: LegalActionsView | null;
   canStartHand: boolean;
+  mode: 'demo' | 'live';
+  isHandActive: boolean;
 }
 
 function clampAmount(value: number, minimum: number, maximum: number): number {
@@ -28,11 +30,39 @@ function authoritativeActionKey(legalActions: LegalActionsView | null): string {
   ].join(':');
 }
 
-function ActionBarForAuthoritativeState({
+function LiveActionBar({
   hero,
-  legalActions,
-  canStartHand,
-}: ActionBarProps) {
+  isHandActive,
+}: Pick<ActionBarProps, 'hero' | 'isHandActive'>) {
+  return (
+    <section
+      className="action-bar action-bar--waiting action-bar--readonly"
+      aria-label="Table actions"
+    >
+      <div className="action-hero">
+        <span className="action-hero__eyebrow">
+          {hero === null ? 'Room member' : 'Your seat'}
+        </span>
+        <strong>{hero?.nickname ?? 'Not seated'}</strong>
+        <span>
+          {hero === null
+            ? 'Watching the table'
+            : `${formatChips(hero.stack)} chips`}
+        </span>
+      </div>
+      <div className="action-waiting-copy">
+        <strong>{isHandActive ? 'Hand in progress' : 'Table open'}</strong>
+        <span>Game controls are not available yet</span>
+      </div>
+    </section>
+  );
+}
+
+function DemoActionBar({ hero, legalActions, canStartHand }: ActionBarProps) {
+  if (hero === null) {
+    throw new Error('The table demo requires a hero seat.');
+  }
+
   const wager = legalActions?.wager ?? null;
   const authoritativeAmount =
     wager === null
@@ -208,8 +238,14 @@ function ActionBarForAuthoritativeState({
 }
 
 export function ActionBar(props: ActionBarProps) {
+  if (props.mode === 'live') {
+    return (
+      <LiveActionBar hero={props.hero} isHandActive={props.isHandActive} />
+    );
+  }
+
   return (
-    <ActionBarForAuthoritativeState
+    <DemoActionBar
       key={authoritativeActionKey(props.legalActions)}
       {...props}
     />

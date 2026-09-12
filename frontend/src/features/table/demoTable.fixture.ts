@@ -10,7 +10,9 @@ const positions = [
 ] as const satisfies readonly SeatPosition[];
 
 export const activeDemoTable = {
+  mode: 'demo',
   variant: 'active',
+  isHandActive: true,
   roomName: 'The Lantern Room',
   roomCode: 'FELT7K2Q',
   smallBlind: 50,
@@ -149,7 +151,9 @@ export const activeDemoTable = {
 } satisfies TableDemoView;
 
 export const openDemoTable = {
+  mode: 'demo',
   variant: 'open',
+  isHandActive: false,
   roomName: 'The Lantern Room',
   roomCode: 'FELT7K2Q',
   smallBlind: 50,

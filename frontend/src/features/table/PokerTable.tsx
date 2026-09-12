@@ -68,7 +68,11 @@ export function PokerTable({ table }: PokerTableProps) {
       </div>
 
       {table.seats.map((seat) => (
-        <PlayerPod key={seat.seatIndex} seat={seat} />
+        <PlayerPod
+          key={seat.seatIndex}
+          seat={seat}
+          interactiveDemo={table.mode === 'demo'}
+        />
       ))}
     </section>
   );

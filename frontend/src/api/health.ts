@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { environment } from '../env';
+import { backendUrls } from '../env';
+import { createBackendUrls } from './backendUrls';
 
 const healthResponseSchema = z.object({
   status: z.literal('ok'),
@@ -9,13 +10,13 @@ const healthResponseSchema = z.object({
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 
 export function buildHealthUrl(apiBaseUrl: string): string {
-  return `${apiBaseUrl.replace(/\/+$/, '')}/health`;
+  return createBackendUrls(apiBaseUrl).healthUrl;
 }
 
 export async function fetchHealth(
   signal?: AbortSignal,
 ): Promise<HealthResponse> {
-  const response = await fetch(buildHealthUrl(environment.VITE_API_BASE_URL), {
+  const response = await fetch(backendUrls.healthUrl, {
     signal: signal ?? null,
   });
 
