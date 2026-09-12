@@ -1,7 +1,9 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { activeRoomSnapshot } from '../../test/roomSnapshots';
 import { activeDemoTable, openDemoTable } from './demoTable.fixture';
+import { roomSnapshotToTableView } from './roomSnapshotAdapter';
 import { TableScreen } from './TableScreen';
 
 describe('TableScreen', () => {
@@ -351,5 +353,149 @@ describe('TableScreen', () => {
       screen.getByText('Connected. Waiting for a fresh table update.'),
     ).toBeInTheDocument();
     expect(screen.queryByText('Table live')).toBeNull();
+  });
+
+  it('submits server-described live fold and call intents without changing the table', () => {
+    const snapshot = activeRoomSnapshot();
+    const table = roomSnapshotToTableView(snapshot, 'guest_host');
+    const onPokerAction = vi.fn(() => true);
+    render(
+      <TableScreen
+        table={table}
+        connectionStatus="connected"
+        onPokerAction={onPokerAction}
+      />,
+    );
+    const potBefore = screen.getByLabelText('Pot 250').textContent;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Fold' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Call 50' }));
+
+    expect(onPokerAction).toHaveBeenNthCalledWith(1, {
+      type: 'fold',
+      contextKey: table.liveActions!.fold!.contextKey,
+    });
+    expect(onPokerAction).toHaveBeenNthCalledWith(2, {
+      type: 'call',
+      contextKey: table.liveActions!.middle!.contextKey,
+    });
+    expect(screen.getByLabelText('Pot 250').textContent).toBe(potBefore);
+    expect(screen.getAllByText('9,850')).not.toHaveLength(0);
+  });
+
+  it('uses a total-to range and resets its draft only for changed context', () => {
+    const snapshot = activeRoomSnapshot();
+    const onPokerAction = vi.fn(() => true);
+    const view = render(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_host')}
+        connectionStatus="connected"
+        onPokerAction={onPokerAction}
+      />,
+    );
+    const input = screen.getByRole('spinbutton', { name: 'Raise total' });
+    fireEvent.change(input, { target: { value: '500' } });
+    expect(input).toHaveValue(500);
+
+    view.rerender(
+      <TableScreen
+        table={roomSnapshotToTableView(structuredClone(snapshot), 'guest_host')}
+        connectionStatus="connected"
+        onPokerAction={onPokerAction}
+      />,
+    );
+    expect(screen.getByRole('spinbutton', { name: 'Raise total' })).toHaveValue(
+      500,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Raise 500' }));
+    expect(onPokerAction).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'raise_to', totalTo: 500 }),
+    );
+
+    const advanced = structuredClone(snapshot);
+    advanced.active_hand!.action_sequence += 1;
+    view.rerender(
+      <TableScreen
+        table={roomSnapshotToTableView(advanced, 'guest_host')}
+        connectionStatus="connected"
+        onPokerAction={onPokerAction}
+      />,
+    );
+    expect(screen.getByRole('spinbutton', { name: 'Raise total' })).toHaveValue(
+      200,
+    );
+  });
+
+  it('renders short all-in as one discrete total without slider or presets', () => {
+    const snapshot = activeRoomSnapshot();
+    snapshot.active_hand!.legal_actions.raise_to = {
+      minimum_full_to: 200,
+      maximum_to: 150,
+      short_all_in_to: 150,
+    };
+    const onPokerAction = vi.fn(() => true);
+    render(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_host')}
+        connectionStatus="connected"
+        onPokerAction={onPokerAction}
+      />,
+    );
+
+    expect(screen.queryByRole('slider')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Min/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Max/ })).toBeNull();
+    expect(screen.getByRole('spinbutton', { name: 'Raise total' })).toHaveValue(
+      150,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Raise all-in 150' }));
+    expect(onPokerAction).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'raise_to', totalTo: 150 }),
+    );
+  });
+
+  it('shows pending feedback and disables all live controls', () => {
+    const snapshot = activeRoomSnapshot();
+    const table = roomSnapshotToTableView(snapshot, 'guest_host', 'connected', {
+      commandId: 'pending',
+      type: 'call',
+      handNumber: 1,
+      expectedActionSequence: 2,
+      actorGuestId: 'guest_host',
+    });
+    render(
+      <TableScreen
+        table={table}
+        connectionStatus="connected"
+        onPokerAction={() => true}
+      />,
+    );
+    expect(
+      screen.getByRole('region', { name: 'Table actions' }),
+    ).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByText('Submitting call…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fold' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Call 50' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Raise 200' })).toBeDisabled();
+  });
+
+  it('does not expose live actions to a non-actor or stale viewer', () => {
+    const snapshot = activeRoomSnapshot();
+    const nonActor = roomSnapshotToTableView(snapshot, 'guest_alice');
+    const view = render(
+      <TableScreen table={nonActor} connectionStatus="connected" />,
+    );
+    expect(screen.getByText('Waiting for Mara')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Fold' })).toBeNull();
+
+    view.rerender(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_host', 'disconnected')}
+        connectionStatus="disconnected"
+      />,
+    );
+    expect(screen.getByText('Disconnected')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Fold' })).toBeNull();
+    expect(screen.getByLabelText('Pot 250')).toBeInTheDocument();
   });
 });

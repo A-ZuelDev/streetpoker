@@ -1,7 +1,13 @@
 import { useState } from 'react';
 
 import { formatChips } from './formatChips';
-import type { LegalActionsView, OccupiedSeatView } from './table.types';
+import type { PokerActionRequest } from '../../realtime/pokerActions';
+import type {
+  LegalActionsView,
+  LiveActionsView,
+  LiveWagerView,
+  OccupiedSeatView,
+} from './table.types';
 
 interface ActionBarProps {
   hero: OccupiedSeatView | null;
@@ -9,6 +15,9 @@ interface ActionBarProps {
   canStartHand: boolean;
   mode: 'demo' | 'live';
   isHandActive: boolean;
+  liveActions: LiveActionsView | null;
+  commandError: string | null;
+  onPokerAction?: (request: PokerActionRequest) => boolean;
 }
 
 function clampAmount(value: number, minimum: number, maximum: number): number {
@@ -32,29 +41,286 @@ function authoritativeActionKey(legalActions: LegalActionsView | null): string {
 
 function LiveActionBar({
   hero,
-  isHandActive,
-}: Pick<ActionBarProps, 'hero' | 'isHandActive'>) {
+  liveActions,
+  commandError,
+  onPokerAction,
+}: Pick<
+  ActionBarProps,
+  'hero' | 'liveActions' | 'commandError' | 'onPokerAction'
+>) {
+  if (liveActions === null) {
+    return null;
+  }
+  const hasControls =
+    liveActions.fold !== null ||
+    liveActions.middle !== null ||
+    liveActions.wager !== null;
+
+  if (!hasControls) {
+    return (
+      <section
+        className="action-bar action-bar--waiting action-bar--readonly"
+        aria-label="Table actions"
+      >
+        <div className="action-hero">
+          <span className="action-hero__eyebrow">
+            {hero === null ? 'Room member' : 'Your seat'}
+          </span>
+          <strong>{hero?.nickname ?? 'Not seated'}</strong>
+          <span>
+            {hero === null
+              ? 'Room observer'
+              : `${formatChips(hero.stack)} chips`}
+          </span>
+        </div>
+        <div className="action-waiting-copy">
+          <strong>{liveActions.statusLabel}</strong>
+          <span>{liveActions.statusDetail}</span>
+        </div>
+        {liveActions.protocolWarning ? (
+          <p className="action-feedback" role="alert">
+            Action controls are unavailable until a fresh valid update arrives.
+          </p>
+        ) : null}
+      </section>
+    );
+  }
+
+  const submit = (request: PokerActionRequest) => {
+    onPokerAction?.(request);
+  };
+  const foldAction = liveActions.fold;
+  const middleAction = liveActions.middle;
+  const wagerAction = liveActions.wager;
+
   return (
     <section
-      className="action-bar action-bar--waiting action-bar--readonly"
+      className="action-bar"
       aria-label="Table actions"
+      aria-busy={liveActions.pending}
     >
       <div className="action-hero">
-        <span className="action-hero__eyebrow">
-          {hero === null ? 'Room member' : 'Your seat'}
-        </span>
+        <span className="action-hero__eyebrow">{liveActions.statusLabel}</span>
         <strong>{hero?.nickname ?? 'Not seated'}</strong>
         <span>
-          {hero === null
-            ? 'Watching the table'
-            : `${formatChips(hero.stack)} chips`}
+          {hero === null ? 'Watching' : `${formatChips(hero.stack)} behind`}
         </span>
       </div>
-      <div className="action-waiting-copy">
-        <strong>{isHandActive ? 'Hand in progress' : 'Table open'}</strong>
-        <span>Game controls are not available yet</span>
+
+      <p className="action-summary" aria-live="polite">
+        <span>Action</span>
+        <strong>{liveActions.statusDetail}</strong>
+      </p>
+
+      <div className="action-buttons action-buttons--quick">
+        {foldAction === null ? null : (
+          <button
+            className="action-button action-button--fold"
+            type="button"
+            disabled={!foldAction.enabled || onPokerAction === undefined}
+            onClick={() =>
+              submit({
+                type: 'fold',
+                contextKey: foldAction.contextKey,
+              })
+            }
+          >
+            Fold
+          </button>
+        )}
+        {middleAction === null ? null : (
+          <button
+            className="action-button action-button--neutral"
+            type="button"
+            disabled={!middleAction.enabled || onPokerAction === undefined}
+            onClick={() =>
+              submit({
+                type: middleAction.type,
+                contextKey: middleAction.contextKey,
+              })
+            }
+          >
+            {middleAction.label}
+          </button>
+        )}
       </div>
+      {wagerAction === null ? (
+        <div />
+      ) : (
+        <LiveWagerControl
+          key={wagerAction.contextKey}
+          wager={wagerAction}
+          canSubmit={onPokerAction !== undefined}
+          onSubmit={(totalTo) =>
+            submit({
+              type: wagerAction.commandType,
+              contextKey: wagerAction.contextKey,
+              totalTo,
+            })
+          }
+        />
+      )}
+      {commandError === null ? null : (
+        <p className="action-feedback" role="alert">
+          {commandError}
+        </p>
+      )}
     </section>
+  );
+}
+
+function LiveWagerControl({
+  wager,
+  canSubmit,
+  onSubmit,
+}: {
+  wager: LiveWagerView;
+  canSubmit: boolean;
+  onSubmit: (totalTo: number) => void;
+}) {
+  const [totalTo, setTotalTo] = useState(wager.initialTotalTo);
+  const [totalToDraft, setTotalToDraft] = useState(
+    String(wager.initialTotalTo),
+  );
+  const isSingleTotal =
+    wager.selection === 'fixed' || wager.minimumFullTo === wager.maximumTo;
+
+  const selectTotalTo = (value: number) => {
+    if (wager.selection === 'fixed') {
+      setTotalTo(wager.shortAllInTo);
+      setTotalToDraft(String(wager.shortAllInTo));
+      return wager.shortAllInTo;
+    }
+    const next = clampAmount(value, wager.minimumFullTo, wager.maximumTo);
+    setTotalTo(next);
+    setTotalToDraft(String(next));
+    return next;
+  };
+
+  const commitDraft = () => {
+    const parsed =
+      totalToDraft.trim() === '' ? Number.NaN : Number(totalToDraft);
+    if (!Number.isSafeInteger(parsed)) {
+      setTotalToDraft(String(totalTo));
+      return null;
+    }
+    return selectTotalTo(parsed);
+  };
+
+  const submit = () => {
+    const selected = commitDraft();
+    if (
+      wager.enabled &&
+      canSubmit &&
+      selected !== null &&
+      Number.isSafeInteger(selected) &&
+      (wager.selection === 'fixed'
+        ? selected === wager.shortAllInTo
+        : selected >= wager.minimumFullTo && selected <= wager.maximumTo)
+    ) {
+      onSubmit(selected);
+    }
+  };
+
+  return (
+    <>
+      <div
+        className={`wager-control ${isSingleTotal ? 'wager-control--fixed' : ''}`}
+      >
+        <div className="wager-control__topline">
+          <label htmlFor="live-wager-total">{wager.label} to</label>
+          <input
+            id="live-wager-total"
+            aria-label={`${wager.label} total`}
+            type="number"
+            step={1}
+            min={
+              wager.selection === 'range'
+                ? wager.minimumFullTo
+                : wager.shortAllInTo
+            }
+            max={wager.maximumTo}
+            value={totalToDraft}
+            readOnly={isSingleTotal}
+            disabled={!wager.enabled || !canSubmit}
+            onChange={(event) => {
+              const value = event.currentTarget.value;
+              setTotalToDraft(value);
+              const parsed = Number(value);
+              if (
+                value.trim() !== '' &&
+                Number.isSafeInteger(parsed) &&
+                wager.selection === 'range' &&
+                parsed >= wager.minimumFullTo &&
+                parsed <= wager.maximumTo
+              ) {
+                setTotalTo(parsed);
+              }
+            }}
+            onBlur={commitDraft}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                submit();
+              }
+            }}
+          />
+        </div>
+        {wager.selection === 'range' && !isSingleTotal ? (
+          <>
+            <label className="sr-only" htmlFor="live-wager-slider">
+              {wager.label} total slider
+            </label>
+            <input
+              id="live-wager-slider"
+              className="wager-control__slider"
+              type="range"
+              step={1}
+              min={wager.minimumFullTo}
+              max={wager.maximumTo}
+              value={totalTo}
+              disabled={!wager.enabled || !canSubmit}
+              onChange={(event) =>
+                selectTotalTo(event.currentTarget.valueAsNumber)
+              }
+            />
+            <div className="wager-control__bounds">
+              <button
+                type="button"
+                disabled={!wager.enabled || !canSubmit}
+                onClick={() => selectTotalTo(wager.minimumFullTo)}
+              >
+                Min {formatChips(wager.minimumFullTo)}
+              </button>
+              <button
+                type="button"
+                disabled={!wager.enabled || !canSubmit}
+                onClick={() => selectTotalTo(wager.maximumTo)}
+              >
+                Max {formatChips(wager.maximumTo)}
+              </button>
+            </div>
+          </>
+        ) : (
+          <strong className="wager-control__fixed-total">
+            {wager.selection === 'fixed' ? 'All-in ' : 'Fixed '}
+            {formatChips(wager.initialTotalTo)}
+          </strong>
+        )}
+      </div>
+      <button
+        className="action-button action-button--primary action-button--wager"
+        type="button"
+        disabled={!wager.enabled || !canSubmit}
+        aria-label={`${wager.label}${wager.selection === 'fixed' ? ' all-in' : ''} ${formatChips(totalTo)}`}
+        onClick={submit}
+      >
+        {wager.label}
+        <span>
+          {wager.selection === 'fixed' ? 'All-in ' : ''}
+          {formatChips(totalTo)}
+        </span>
+      </button>
+    </>
   );
 }
 
@@ -240,7 +506,14 @@ function DemoActionBar({ hero, legalActions, canStartHand }: ActionBarProps) {
 export function ActionBar(props: ActionBarProps) {
   if (props.mode === 'live') {
     return (
-      <LiveActionBar hero={props.hero} isHandActive={props.isHandActive} />
+      <LiveActionBar
+        hero={props.hero}
+        liveActions={props.liveActions}
+        commandError={props.commandError}
+        {...(props.onPokerAction === undefined
+          ? {}
+          : { onPokerAction: props.onPokerAction })}
+      />
     );
   }
 

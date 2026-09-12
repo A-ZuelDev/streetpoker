@@ -147,4 +147,62 @@ describe('RoomSocket', () => {
     expect(fake.closes).toHaveLength(1);
     expect(factory).toHaveBeenCalledOnce();
   });
+
+  it('sends one strict poker command only while open', () => {
+    const { fake, roomSocket } = setup();
+    const command = {
+      type: 'check' as const,
+      command_id: 'command-1',
+      hand_number: 1,
+      expected_action_sequence: 2,
+    };
+
+    expect(roomSocket.sendPokerCommand(command)).toBe(false);
+    fake.open();
+    expect(roomSocket.sendPokerCommand(command)).toBe(true);
+    expect(fake.sent.map((value) => JSON.parse(value))).toEqual([
+      {
+        type: 'connect',
+        guest_token: 'A'.repeat(43),
+        nickname: 'Mara',
+        password: 'private-password',
+      },
+      command,
+    ]);
+    roomSocket.close();
+    expect(roomSocket.sendPokerCommand(command)).toBe(false);
+    expect(fake.sent).toHaveLength(2);
+  });
+
+  it('does not send or queue an invalid poker command', () => {
+    const { fake, roomSocket } = setup();
+    fake.open();
+    expect(
+      roomSocket.sendPokerCommand({
+        type: 'bet_to',
+        command_id: 'bad',
+        hand_number: 1,
+        expected_action_sequence: 2,
+        total: 0,
+      } as never),
+    ).toBe(false);
+    expect(fake.sent).toHaveLength(1);
+  });
+
+  it('returns false on synchronous send failure without retrying', () => {
+    const { fake, roomSocket } = setup();
+    fake.open();
+    const send = vi.spyOn(fake, 'send').mockImplementation(() => {
+      throw new DOMException('closed');
+    });
+    expect(
+      roomSocket.sendPokerCommand({
+        type: 'fold',
+        command_id: 'one',
+        hand_number: 1,
+        expected_action_sequence: 2,
+      }),
+    ).toBe(false);
+    expect(send).toHaveBeenCalledOnce();
+  });
 });

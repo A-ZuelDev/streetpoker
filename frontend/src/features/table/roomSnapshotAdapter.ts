@@ -9,6 +9,9 @@ import type {
   SeatView,
   TableView,
 } from './table.types';
+import type { ConnectionStatus } from '../../realtime/realtimeStore';
+import type { PendingPokerCommand } from '../../realtime/pokerActions';
+import { deriveLiveActionModel } from './liveActionModel';
 
 const positions = [
   'bottom-center',
@@ -93,6 +96,8 @@ function memberView(
 export function roomSnapshotToTableView(
   snapshot: RoomView,
   viewerGuestId: string,
+  connectionStatus: ConnectionStatus = 'connected',
+  pendingCommand: PendingPokerCommand | null = null,
 ): TableView {
   const activeHand = snapshot.active_hand;
   const activeByGuest = new Map(
@@ -141,6 +146,13 @@ export function roomSnapshotToTableView(
         cards,
       };
     });
+  const viewerHasSeat = seats.some(
+    (seat) => seat.kind === 'occupied' && seat.isHero,
+  );
+  const currentActorNickname =
+    activeHand?.players.find(
+      (player) => player.guest_id === activeHand.current_actor,
+    )?.nickname ?? null;
 
   return {
     mode: 'live',
@@ -156,6 +168,15 @@ export function roomSnapshotToTableView(
     board: activeHand?.board.map(cardView) ?? [],
     seats,
     legalActions: null,
+    liveActions: deriveLiveActionModel({
+      activeHand,
+      viewerGuestId,
+      viewerHasSeat,
+      currentActorNickname,
+      connectionStatus,
+      pendingCommand,
+      hasCompletedHand: snapshot.last_hand !== null,
+    }),
     roomPanel: {
       members: snapshot.room.members.map((member) =>
         memberView(member, activeByGuest.get(member.guest_id)),
