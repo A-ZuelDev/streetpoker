@@ -61,9 +61,10 @@ state into a candidate, mutates and validates only the candidate, builds the req
 and replaces the repository entry only after success. Terminal settlement, table reconciliation,
 active-hand clearing, and return to `OPEN` are one candidate transaction.
 
-`InMemoryRoomRepository` atomically maintains room-ID and normalized-code indexes, but it is not
-thread-safe. Phase 9A assumes callers serialize the complete load, copy, command, optional terminal
-settlement, validation, and replace boundary. Phase 9B must wrap that application transaction in
-one process-local per-room async serializer shared by all transports. A future
-multi-process deployment will require a different repository/concurrency design; no locks, Redis,
-or persistence are included here.
+`InMemoryRoomRepository` uses a short process-local lock to make each primitive lookup, insertion,
+and replacement safe across transport worker threads while keeping its two indexes reconciled.
+Callers must still serialize the complete same-room load, copy, command, optional terminal
+settlement, validation, and replace boundary. Phase 9B wraps that application transaction in one
+process-local per-room async serializer shared by all transports. A future
+multi-process deployment will require a different repository/concurrency design; no distributed
+locks, Redis, or persistence are included here.
