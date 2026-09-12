@@ -326,4 +326,30 @@ describe('TableScreen', () => {
     expect(screen.getByRole('button', { name: 'Start hand' })).toBeEnabled();
     expect(screen.getByText('Backend offline')).toBeInTheDocument();
   });
+
+  it('keeps stale live state visible through connecting and syncing', () => {
+    const liveTable = {
+      ...openDemoTable,
+      mode: 'live' as const,
+      chat: null,
+      legalActions: null,
+      roomPanel: { ...openDemoTable.roomPanel, canStartHand: false },
+    };
+    const view = render(
+      <TableScreen table={liveTable} connectionStatus="connecting" />,
+    );
+
+    expect(
+      screen.getByText('Connecting. The displayed table may be stale.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('The Lantern Room')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Start hand' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Chat' })).toBeNull();
+
+    view.rerender(<TableScreen table={liveTable} connectionStatus="syncing" />);
+    expect(
+      screen.getByText('Connected. Waiting for a fresh table update.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Table live')).toBeNull();
+  });
 });

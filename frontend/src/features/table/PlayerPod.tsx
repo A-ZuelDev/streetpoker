@@ -4,6 +4,7 @@ import type { OccupiedSeatView, SeatView } from './table.types';
 
 interface PlayerPodProps {
   seat: SeatView;
+  interactiveDemo: boolean;
 }
 
 const stateLabels: Record<OccupiedSeatView['state'], string> = {
@@ -12,6 +13,7 @@ const stateLabels: Record<OccupiedSeatView['state'], string> = {
   folded: 'Folded',
   'all-in': 'All in',
   'sitting-out': 'Sitting out',
+  'not-in-hand': 'Not in hand',
 };
 
 function SeatCards({ seat }: { seat: OccupiedSeatView }) {
@@ -44,24 +46,36 @@ function SeatCards({ seat }: { seat: OccupiedSeatView }) {
   );
 }
 
-export function PlayerPod({ seat }: PlayerPodProps) {
+export function PlayerPod({ seat, interactiveDemo }: PlayerPodProps) {
   if (seat.kind === 'empty') {
     return (
       <div
         className={`table-seat table-seat--${seat.position}`}
         data-seat-index={seat.seatIndex}
       >
-        <button
-          className="player-pod player-pod--empty"
-          type="button"
-          aria-label={`Request empty seat ${seat.seatIndex + 1}`}
-          title="Demo only"
-        >
-          <span className="player-pod__empty-icon" aria-hidden="true">
-            +
-          </span>
-          <span>Open seat</span>
-        </button>
+        {interactiveDemo ? (
+          <button
+            className="player-pod player-pod--empty"
+            type="button"
+            aria-label={`Request empty seat ${seat.seatIndex + 1}`}
+            title="Demo only"
+          >
+            <span className="player-pod__empty-icon" aria-hidden="true">
+              +
+            </span>
+            <span>Open seat</span>
+          </button>
+        ) : (
+          <div
+            className="player-pod player-pod--empty"
+            aria-label={`Empty seat ${seat.seatIndex + 1}`}
+          >
+            <span className="player-pod__empty-icon" aria-hidden="true">
+              +
+            </span>
+            <span>Open seat</span>
+          </div>
+        )}
       </div>
     );
   }

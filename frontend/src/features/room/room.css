@@ -20,6 +20,20 @@
   align-items: center;
 }
 
+.backend-status--connecting .backend-status__dot,
+.backend-status--syncing .backend-status__dot {
+  background: var(--gold);
+}
+
+.backend-status--connected .backend-status__dot {
+  background: var(--emerald);
+}
+
+.backend-status--disconnected .backend-status__dot,
+.backend-status--idle .backend-status__dot {
+  background: var(--danger);
+}
+
 .table-topbar__brand-group {
   gap: 0.65rem;
 }

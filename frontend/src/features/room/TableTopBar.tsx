@@ -1,11 +1,14 @@
 import { formatChips } from '../table/formatChips';
 import type { TableDemoView } from '../table/table.types';
+import type { ConnectionStatus } from '../../realtime/realtimeStore';
 
 export type BackendHealthStatus = 'checking' | 'online' | 'offline';
 
 interface TableTopBarProps {
   table: TableDemoView;
   backendStatus: BackendHealthStatus;
+  connectionStatus: ConnectionStatus;
+  onReconnect?: () => void;
 }
 
 const backendLabels: Record<BackendHealthStatus, string> = {
@@ -14,7 +17,25 @@ const backendLabels: Record<BackendHealthStatus, string> = {
   offline: 'Backend offline',
 };
 
-export function TableTopBar({ table, backendStatus }: TableTopBarProps) {
+const connectionLabels: Record<ConnectionStatus, string> = {
+  idle: 'Not connected',
+  connecting: 'Connecting',
+  syncing: 'Syncing table',
+  connected: 'Table live',
+  disconnected: 'Disconnected · stale table',
+};
+
+export function TableTopBar({
+  table,
+  backendStatus,
+  connectionStatus,
+  onReconnect,
+}: TableTopBarProps) {
+  const statusClass = table.mode === 'demo' ? backendStatus : connectionStatus;
+  const statusLabel =
+    table.mode === 'demo'
+      ? backendLabels[backendStatus]
+      : connectionLabels[connectionStatus];
   return (
     <header className="table-topbar">
       <div className="table-topbar__brand-group">
@@ -23,7 +44,9 @@ export function TableTopBar({ table, backendStatus }: TableTopBarProps) {
             StreetPoker
           </a>
         </h1>
-        <span className="demo-badge">Demo table</span>
+        <span className="demo-badge">
+          {table.mode === 'demo' ? 'Demo table' : 'Live room'}
+        </span>
       </div>
 
       <div className="room-summary" aria-label="Room summary">
@@ -45,28 +68,37 @@ export function TableTopBar({ table, backendStatus }: TableTopBarProps) {
           </span>
         ) : null}
         <span
-          className={`backend-status backend-status--${backendStatus}`}
+          className={`backend-status backend-status--${statusClass}`}
           role="status"
         >
           <span className="backend-status__dot" aria-hidden="true" />
-          {backendLabels[backendStatus]}
+          {statusLabel}
         </span>
-        <button
-          className="topbar-button"
-          type="button"
-          disabled
-          title="Demo only"
-        >
-          Settings
-        </button>
-        <button
-          className="topbar-button topbar-button--leave"
-          type="button"
-          disabled
-          title="Demo only"
-        >
-          Leave
-        </button>
+        {table.mode === 'live' && connectionStatus === 'disconnected' ? (
+          <button className="topbar-button" type="button" onClick={onReconnect}>
+            Reconnect
+          </button>
+        ) : null}
+        {table.mode === 'demo' ? (
+          <>
+            <button
+              className="topbar-button"
+              type="button"
+              disabled
+              title="Demo only"
+            >
+              Settings
+            </button>
+            <button
+              className="topbar-button topbar-button--leave"
+              type="button"
+              disabled
+              title="Demo only"
+            >
+              Leave
+            </button>
+          </>
+        ) : null}
       </div>
     </header>
   );

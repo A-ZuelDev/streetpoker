@@ -17,6 +17,37 @@
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 120 120' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.12'/%3E%3C/svg%3E");
 }
 
+.table-screen--stale .poker-stage {
+  filter: saturate(0.72);
+}
+
+.session-banner {
+  position: absolute;
+  z-index: 8;
+  top: 4rem;
+  left: 50%;
+  display: grid;
+  max-width: min(90vw, 42rem);
+  padding: 0.55rem 0.9rem;
+  color: var(--gold-soft);
+  border: 1px solid rgb(221 183 104 / 36%);
+  border-radius: 0.55rem;
+  background: rgb(16 21 19 / 94%);
+  box-shadow: 0 0.8rem 2rem rgb(0 0 0 / 30%);
+  font-size: 0.72rem;
+  text-align: center;
+  transform: translateX(-50%);
+}
+
+.session-banner small {
+  margin-top: 0.2rem;
+  color: var(--text-muted);
+}
+
+.action-bar--readonly {
+  grid-template-columns: minmax(10rem, 16rem) minmax(0, 1fr);
+}
+
 .table-screen__body {
   position: relative;
   z-index: 1;
