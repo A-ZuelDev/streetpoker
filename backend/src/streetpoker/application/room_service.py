@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 from collections.abc import Callable
+from threading import RLock
 from typing import Protocol
 from uuid import uuid4
 
@@ -146,7 +147,10 @@ class SecureRoomCodeSource:
 
 
 class RoomRepository(Protocol):
-    """Small storage boundary for process-local room aggregates."""
+    """Thread-safe primitive storage boundary for process-local room aggregates.
+
+    Callers serialize complete same-room transactions spanning multiple operations.
+    """
 
     def add(self, room: _Room) -> None:
         """Atomically insert a room under both immutable indexes."""
@@ -170,64 +174,76 @@ class RoomRepository(Protocol):
 
 
 class InMemoryRoomRepository:
-    """Non-thread-safe in-memory room store with two reconciled indexes."""
+    """Thread-safe primitive room storage with two reconciled indexes.
 
-    __slots__ = ("_ids_by_code", "_rooms_by_id")
+    Callers must still serialize complete same-room service transactions.
+    """
+
+    __slots__ = ("_ids_by_code", "_lock", "_rooms_by_id")
 
     def __init__(self) -> None:
         self._rooms_by_id: dict[RoomId, _Room] = {}
         self._ids_by_code: dict[str, RoomId] = {}
+        self._lock = RLock()
 
     def add(self, room: _Room) -> None:
         room.validate()
-        if room.room_id in self._rooms_by_id:
-            raise DuplicateRoomIdError(f"Room ID {room.room_id.value!r} already exists.")
-        if room.room_code in self._ids_by_code:
-            raise DuplicateRoomCodeError(f"Room code {room.room_code!r} already exists.")
-        self._rooms_by_id[room.room_id] = room
-        self._ids_by_code[room.room_code] = room.room_id
+        with self._lock:
+            if room.room_id in self._rooms_by_id:
+                raise DuplicateRoomIdError(f"Room ID {room.room_id.value!r} already exists.")
+            if room.room_code in self._ids_by_code:
+                raise DuplicateRoomCodeError(f"Room code {room.room_code!r} already exists.")
+            self._rooms_by_id[room.room_id] = room
+            self._ids_by_code[room.room_code] = room.room_id
 
     def get_by_id(self, room_id: RoomId) -> _Room:
-        try:
-            room = self._rooms_by_id[room_id]
-        except KeyError:
-            raise RoomNotFoundError(f"Room ID {room_id.value!r} was not found.") from None
-        indexed_id = self._ids_by_code.get(room.room_code)
-        if indexed_id != room.room_id:
-            raise InvalidRoomStateError("The room repository indexes are inconsistent.")
-        return room
+        with self._lock:
+            try:
+                room = self._rooms_by_id[room_id]
+            except KeyError:
+                raise RoomNotFoundError(f"Room ID {room_id.value!r} was not found.") from None
+            indexed_id = self._ids_by_code.get(room.room_code)
+            if indexed_id != room.room_id:
+                raise InvalidRoomStateError("The room repository indexes are inconsistent.")
+            return room
 
     def get_by_code(self, room_code: str) -> _Room:
         normalized = normalize_room_code(room_code)
-        try:
-            room_id = self._ids_by_code[normalized]
-        except KeyError:
-            raise RoomNotFoundError(f"Room code {normalized!r} was not found.") from None
-        try:
-            room = self._rooms_by_id[room_id]
-        except KeyError:
-            raise InvalidRoomStateError("The room repository indexes are inconsistent.") from None
-        if room.room_code != normalized:
-            raise InvalidRoomStateError("The room repository indexes are inconsistent.")
-        return room
+        with self._lock:
+            try:
+                room_id = self._ids_by_code[normalized]
+            except KeyError:
+                raise RoomNotFoundError(f"Room code {normalized!r} was not found.") from None
+            try:
+                room = self._rooms_by_id[room_id]
+            except KeyError:
+                raise InvalidRoomStateError(
+                    "The room repository indexes are inconsistent."
+                ) from None
+            if room.room_code != normalized:
+                raise InvalidRoomStateError("The room repository indexes are inconsistent.")
+            return room
 
     def replace(self, room: _Room) -> None:
         room.validate()
-        try:
-            existing = self._rooms_by_id[room.room_id]
-        except KeyError:
-            raise RoomNotFoundError(f"Room ID {room.room_id.value!r} was not found.") from None
-        if room.room_code != existing.room_code:
-            raise InvalidRoomStateError(
-                "Room codes are immutable and cannot change on replacement."
-            )
-        indexed_id = self._ids_by_code.get(room.room_code)
-        if indexed_id != room.room_id:
-            raise InvalidRoomStateError("The room repository indexes are inconsistent.")
-        self._rooms_by_id[room.room_id] = room
+        with self._lock:
+            try:
+                existing = self._rooms_by_id[room.room_id]
+            except KeyError:
+                raise RoomNotFoundError(f"Room ID {room.room_id.value!r} was not found.") from None
+            if room.room_code != existing.room_code:
+                raise InvalidRoomStateError(
+                    "Room codes are immutable and cannot change on replacement."
+                )
+            indexed_id = self._ids_by_code.get(room.room_code)
+            if indexed_id != room.room_id:
+                raise InvalidRoomStateError("The room repository indexes are inconsistent.")
+            self._rooms_by_id[room.room_id] = room
 
     def contains_code(self, room_code: str) -> bool:
-        return normalize_room_code(room_code) in self._ids_by_code
+        normalized = normalize_room_code(room_code)
+        with self._lock:
+            return normalized in self._ids_by_code
 
 
 def _new_room_id() -> RoomId:

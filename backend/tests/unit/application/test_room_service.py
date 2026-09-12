@@ -2,6 +2,7 @@ import hashlib
 import hmac
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import FrozenInstanceError, fields, replace
 
 import pytest
@@ -966,6 +967,26 @@ def test_repository_duplicate_id_and_code_insertions_are_atomic() -> None:
     with pytest.raises(DuplicateRoomCodeError):
         repository.add(duplicate_code)
     assert repository.get_by_code("abcdefgh") is first
+
+
+def test_repository_indexes_remain_reconciled_across_concurrent_creates() -> None:
+    service = RoomService(password_hasher=FastPasswordHasher())
+
+    def create(index: int) -> RoomSnapshot:
+        return service.create_room(
+            actor=GuestId(f"concurrent-guest-{index}"),
+            nickname=f"Host {index}",
+            settings=RoomSettings(room_name=f"Room {index}"),
+        )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        snapshots = tuple(executor.map(create, range(32)))
+
+    assert len({snapshot.room_id for snapshot in snapshots}) == len(snapshots)
+    assert len({snapshot.room_code for snapshot in snapshots}) == len(snapshots)
+    for snapshot in snapshots:
+        assert service.get_room_snapshot(snapshot.room_id) == snapshot
+        assert service.get_room_snapshot_by_code(snapshot.room_code) == snapshot
 
 
 def test_repository_replacement_cannot_desynchronize_code_index() -> None:

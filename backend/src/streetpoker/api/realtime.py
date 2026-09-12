@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import logging
 from collections.abc import Callable, Coroutine
 from contextlib import suppress
@@ -13,6 +11,7 @@ from typing import Final
 
 from fastapi import WebSocket
 
+from streetpoker.api.guest_identity import derive_guest_id
 from streetpoker.api.schemas.realtime import (
     ApproveSeatCommand,
     BetToCommand,
@@ -70,6 +69,8 @@ from streetpoker.application import (
     RoomSeatAlreadyRequestedError,
     RoomSeatOccupiedError,
     RoomService,
+    RoomSettings,
+    RoomSnapshot,
     RoomStatus,
     SeatRequestNotFoundError,
     StaleHandVersionError,
@@ -130,19 +131,6 @@ class SocketSession:
     outbound: asyncio.Queue[_OutboundItem]
     writer: asyncio.Task[None] | None = None
     registered: bool = True
-
-
-def derive_guest_id(guest_token: str) -> GuestId:
-    """Derive a public authorization identity from a private 256-bit bearer token."""
-    padding = "=" * (-len(guest_token) % 4)
-    try:
-        raw = base64.urlsafe_b64decode(guest_token + padding)
-    except ValueError as error:
-        raise ValueError("Guest token is not valid base64url.") from error
-    canonical = base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
-    if len(raw) != 32 or canonical != guest_token:
-        raise ValueError("Guest token must canonically encode 32 bytes.")
-    return GuestId(f"guest_{hashlib.sha256(raw).hexdigest()}")
 
 
 async def _run_serialized_in_thread[**P, T](
@@ -387,7 +375,32 @@ class RealtimeRoomCoordinator:
     ) -> None:
         self._room_service = room_service
         self.registry = ConnectionRegistry() if registry is None else registry
+        self._room_creation_lock = asyncio.Lock()
         self._room_locks: dict[RoomId, asyncio.Lock] = {}
+
+    async def create_room(
+        self,
+        *,
+        actor: GuestId,
+        nickname: str,
+        settings: RoomSettings,
+        password: str | None = None,
+    ) -> RoomSnapshot:
+        """Create one room without blocking the event loop on password hashing."""
+        async with self._room_creation_lock:
+            if password is None:
+                return self._room_service.create_room(
+                    actor=actor,
+                    nickname=nickname,
+                    settings=settings,
+                )
+            return await _run_serialized_in_thread(
+                self._room_service.create_room,
+                actor=actor,
+                nickname=nickname,
+                settings=settings,
+                password=password,
+            )
 
     async def bind(
         self,

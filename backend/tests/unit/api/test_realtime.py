@@ -7,12 +7,12 @@ import pytest
 from fastapi import WebSocket
 from pydantic import ValidationError
 
+from streetpoker.api.guest_identity import derive_guest_id
 from streetpoker.api.realtime import (
     ConnectionFailure,
     ConnectionRegistry,
     RealtimeRoomCoordinator,
     SafeError,
-    derive_guest_id,
     safe_error,
 )
 from streetpoker.api.schemas.realtime import (
@@ -63,12 +63,17 @@ class ThreadRecordingHasher:
         self._delegate = Pbkdf2PasswordHasher(iterations=1)
         self.hash_threads: list[int] = []
         self.verify_threads: list[int] = []
+        self.hash_started = threading.Event()
+        self.hash_release = threading.Event()
+        self.hash_release.set()
         self.verify_started = threading.Event()
         self.verify_release = threading.Event()
         self.verify_release.set()
 
     def hash_password(self, password: str) -> _PasswordRecord:
         self.hash_threads.append(threading.get_ident())
+        self.hash_started.set()
+        self.hash_release.wait()
         return self._delegate.hash_password(password)
 
     def verify_password(self, password: str, record: _PasswordRecord) -> bool:
@@ -500,6 +505,208 @@ def test_password_settings_hash_runs_off_event_loop_thread() -> None:
         assert hasher.hash_threads[0] != event_loop_thread
         assert service.get_room_snapshot(created.room_id).settings.password_protected
         await coordinator.disconnect(session)
+
+    asyncio.run(scenario())
+
+
+def test_protected_room_creation_hashes_off_event_loop_without_socket_side_effects() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher)
+        coordinator = RealtimeRoomCoordinator(service)
+        event_loop_thread = threading.get_ident()
+        hasher.hash_threads.clear()
+
+        created = await coordinator.create_room(
+            actor=derive_guest_id(token(31)),
+            nickname="Host",
+            settings=RoomSettings(room_name="Created"),
+            password="correct",
+        )
+
+        assert len(hasher.hash_threads) == 1
+        assert hasher.hash_threads[0] != event_loop_thread
+        assert created.settings.password_protected
+        assert coordinator.registry.all_sessions(created.room_id) == ()
+
+    asyncio.run(scenario())
+
+
+def test_concurrent_room_creations_are_serialized() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher, codes=("ABCDEFGH", "BCDEFGHJ"))
+        coordinator = RealtimeRoomCoordinator(service)
+        hasher.hash_started.clear()
+        hasher.hash_release.clear()
+        first_task = asyncio.create_task(
+            coordinator.create_room(
+                actor=derive_guest_id(token(32)),
+                nickname="First",
+                settings=RoomSettings(room_name="First"),
+                password="correct",
+            )
+        )
+        try:
+            assert await asyncio.to_thread(hasher.hash_started.wait, 1.0)
+            second_task = asyncio.create_task(
+                coordinator.create_room(
+                    actor=derive_guest_id(token(33)),
+                    nickname="Second",
+                    settings=RoomSettings(room_name="Second"),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not second_task.done()
+        finally:
+            hasher.hash_release.set()
+
+        first, second = await asyncio.gather(first_task, second_task)
+        assert (first.room_code, second.room_code) == ("ABCDEFGH", "BCDEFGHJ")
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_creation_holds_lock_until_worker_finishes() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher, codes=("ABCDEFGH", "BCDEFGHJ"))
+        coordinator = RealtimeRoomCoordinator(service)
+        hasher.hash_started.clear()
+        hasher.hash_release.clear()
+        cancelled = asyncio.create_task(
+            coordinator.create_room(
+                actor=derive_guest_id(token(34)),
+                nickname="Cancelled",
+                settings=RoomSettings(room_name="Cancelled"),
+                password="correct",
+            )
+        )
+        assert await asyncio.to_thread(hasher.hash_started.wait, 1.0)
+        cancelled.cancel()
+        waiting = asyncio.create_task(
+            coordinator.create_room(
+                actor=derive_guest_id(token(35)),
+                nickname="Waiting",
+                settings=RoomSettings(room_name="Waiting"),
+            )
+        )
+        await asyncio.sleep(0)
+        assert not cancelled.done()
+        assert not waiting.done()
+
+        hasher.hash_release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled
+        created = await waiting
+        assert created.room_code == "BCDEFGHJ"
+        assert service.get_room_snapshot_by_code("ABCDEFGH").settings.password_protected
+
+    asyncio.run(scenario())
+
+
+def test_creation_can_safely_progress_while_other_room_password_join_hashes() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher, codes=("ABCDEFGH", "BCDEFGHJ"))
+        host_token = token(36)
+        joining_token = token(37)
+        protected = service.create_room(
+            actor=derive_guest_id(host_token),
+            nickname="Protected Host",
+            settings=RoomSettings(room_name="Protected"),
+            password="correct",
+        )
+        coordinator = RealtimeRoomCoordinator(service)
+        host_session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            protected.room_code,
+            ConnectRequest(type="connect", guest_token=host_token),
+        )
+        hasher.verify_started.clear()
+        hasher.verify_release.clear()
+        join_task = asyncio.create_task(
+            coordinator.bind(
+                cast(WebSocket, RecordingWebSocket()),
+                protected.room_code,
+                ConnectRequest(
+                    type="connect",
+                    guest_token=joining_token,
+                    nickname="Joining",
+                    password="correct",
+                ),
+            )
+        )
+        try:
+            assert await asyncio.to_thread(hasher.verify_started.wait, 1.0)
+            created = await asyncio.wait_for(
+                coordinator.create_room(
+                    actor=derive_guest_id(token(38)),
+                    nickname="Other Host",
+                    settings=RoomSettings(room_name="Other"),
+                ),
+                timeout=1.0,
+            )
+            assert created.room_code == "BCDEFGHJ"
+        finally:
+            hasher.verify_release.set()
+
+        joined_session = await join_task
+        assert len(service.get_room_snapshot(protected.room_id).members) == 2
+        assert len(service.get_room_snapshot(created.room_id).members) == 1
+        await coordinator.disconnect(joined_session)
+        await coordinator.disconnect(host_session)
+
+    asyncio.run(scenario())
+
+
+def test_creation_can_safely_progress_while_other_room_password_update_hashes() -> None:
+    async def scenario() -> None:
+        hasher = ThreadRecordingHasher()
+        service = service_with_hasher(hasher, codes=("ABCDEFGH", "BCDEFGHJ"))
+        host_token = token(39)
+        host = derive_guest_id(host_token)
+        original = service.create_room(
+            actor=host,
+            nickname="Original Host",
+            settings=RoomSettings(room_name="Original"),
+        )
+        coordinator = RealtimeRoomCoordinator(service)
+        host_session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            original.room_code,
+            ConnectRequest(type="connect", guest_token=host_token),
+        )
+        hasher.hash_started.clear()
+        hasher.hash_release.clear()
+        update_task = asyncio.create_task(
+            coordinator.handle_command(
+                host_session,
+                UpdateSettingsCommand(
+                    type="update_settings",
+                    command_id="protect",
+                    password="correct",
+                ),
+            )
+        )
+        try:
+            assert await asyncio.to_thread(hasher.hash_started.wait, 1.0)
+            created = await asyncio.wait_for(
+                coordinator.create_room(
+                    actor=derive_guest_id(token(40)),
+                    nickname="Other Host",
+                    settings=RoomSettings(room_name="Other"),
+                ),
+                timeout=1.0,
+            )
+            assert created.room_code == "BCDEFGHJ"
+        finally:
+            hasher.hash_release.set()
+
+        await update_task
+        assert service.get_room_snapshot(original.room_id).settings.password_protected
+        assert len(service.get_room_snapshot(created.room_id).members) == 1
+        await coordinator.disconnect(host_session)
 
     asyncio.run(scenario())
 

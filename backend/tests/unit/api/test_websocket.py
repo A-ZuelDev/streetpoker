@@ -8,7 +8,7 @@ from starlette.testclient import WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
 
 from streetpoker.api.app import create_app
-from streetpoker.api.realtime import derive_guest_id
+from streetpoker.api.guest_identity import derive_guest_id
 from streetpoker.api.routes import realtime as realtime_route
 from streetpoker.application import (
     GuestId,
