@@ -20,11 +20,18 @@ export function LiveRoomSession() {
   if (state.snapshot !== null && state.guestId !== null) {
     return (
       <TableScreen
-        table={roomSnapshotToTableView(state.snapshot, state.guestId)}
+        table={roomSnapshotToTableView(
+          state.snapshot,
+          state.guestId,
+          state.status,
+          state.pendingCommand,
+        )}
         connectionStatus={state.status}
         connectionError={state.lastConnectionError?.message ?? null}
         persistenceWarning={session.persistenceWarning}
         onReconnect={session.reconnect}
+        commandError={state.lastCommandError?.message ?? null}
+        onPokerAction={session.sendPokerAction}
       />
     );
   }

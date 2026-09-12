@@ -279,4 +279,54 @@ describe('LiveRoomSession', () => {
     expect(document.body.textContent).not.toContain('private-password');
     expect(document.body.textContent).not.toContain('private server detail');
   });
+
+  it('sends one live action, retains pending through ack, and maps errors safely', async () => {
+    renderSession();
+    const form = formFor('Join a room');
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Room code' }), {
+      target: { value: 'ABCDEFGH' },
+    });
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Nickname' }), {
+      target: { value: 'Mara' },
+    });
+    fireEvent.submit(form);
+    const socket = FakeBrowserSocket.instances[0]!;
+    connectAndState(socket, activeRoomSnapshot());
+    const call = await screen.findByRole('button', { name: 'Call 50' });
+    const potBefore = screen.getByLabelText('Pot 250').textContent;
+
+    fireEvent.click(call);
+    fireEvent.click(call);
+
+    expect(socket.sent).toHaveLength(2);
+    const command = JSON.parse(socket.sent[1]!) as Record<string, unknown>;
+    expect(command).toEqual({
+      type: 'call',
+      command_id: expect.any(String),
+      hand_number: 1,
+      expected_action_sequence: 2,
+    });
+    expect(String(command.command_id)).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(screen.getByLabelText('Pot 250').textContent).toBe(potBefore);
+    expect(call).toBeDisabled();
+
+    socket.serverMessage({
+      type: 'command_ack',
+      command_id: command.command_id,
+    });
+    expect(call).toBeDisabled();
+    socket.serverMessage({
+      type: 'command_error',
+      command_id: command.command_id,
+      code: 'illegal_call',
+      message: 'private player path',
+    });
+    expect(
+      await screen.findByText('Calling is not available now.'),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('private player path');
+    expect(screen.getByLabelText('Pot 250').textContent).toBe(potBefore);
+  });
 });

@@ -6,6 +6,7 @@ import {
   type ServerMessage,
 } from './messages';
 import { protocolSessionError, SessionError } from './sessionError';
+import { pokerCommandSchema, type PokerCommand } from './pokerActions';
 
 export interface RoomSocketEvents {
   onMessage(message: ServerMessage): void;
@@ -58,6 +59,22 @@ export class RoomSocket {
       this.socket.readyState === WebSocket.OPEN
     ) {
       this.socket.close(1000, 'client close');
+    }
+  }
+
+  sendPokerCommand(command: PokerCommand): boolean {
+    if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const parsed = pokerCommandSchema.safeParse(command);
+    if (!parsed.success) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(parsed.data));
+      return true;
+    } catch {
+      return false;
     }
   }
 

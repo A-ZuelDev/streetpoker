@@ -91,4 +91,101 @@ describe('realtimeStore', () => {
       snapshot: null,
     });
   });
+
+  it('admits only one pending command synchronously and ack retains it', () => {
+    const store = createRealtimeStore();
+    const pending = {
+      commandId: 'one',
+      type: 'call' as const,
+      handNumber: 1,
+      expectedActionSequence: 2,
+      actorGuestId: 'guest_host',
+    };
+    expect(store.getState().tryBeginPokerCommand(pending)).toBe(true);
+    expect(
+      store.getState().tryBeginPokerCommand({ ...pending, commandId: 'two' }),
+    ).toBe(false);
+    store.getState().receiveCommandAck('one');
+    expect(store.getState().pendingCommand).toEqual(pending);
+  });
+
+  it('clears only a matching command error and never mutates the snapshot', () => {
+    const store = createRealtimeStore();
+    const snapshot = activeRoomSnapshot();
+    store.getState().replaceSnapshot(snapshot);
+    store.getState().tryBeginPokerCommand({
+      commandId: 'one',
+      type: 'call',
+      handNumber: 1,
+      expectedActionSequence: 2,
+      actorGuestId: 'guest_host',
+    });
+    store.getState().receiveCommandError({
+      commandId: 'other',
+      code: 'illegal_call',
+      message: 'safe',
+    });
+    expect(store.getState().pendingCommand?.commandId).toBe('one');
+    store.getState().receiveCommandError({
+      commandId: 'one',
+      code: 'illegal_call',
+      message: 'Calling is not available now.',
+    });
+    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().snapshot).toBe(snapshot);
+  });
+
+  it('resolves pending only when authoritative action context changes', () => {
+    const store = createRealtimeStore();
+    const snapshot = activeRoomSnapshot();
+    const begin = () =>
+      store.getState().tryBeginPokerCommand({
+        commandId: crypto.randomUUID(),
+        type: 'call',
+        handNumber: 1,
+        expectedActionSequence: 2,
+        actorGuestId: 'guest_host',
+      });
+
+    begin();
+    store.getState().replaceSnapshot(structuredClone(snapshot));
+    expect(store.getState().pendingCommand).not.toBeNull();
+
+    const sequence = structuredClone(snapshot);
+    sequence.active_hand!.action_sequence = 3;
+    store.getState().replaceSnapshot(sequence);
+    expect(store.getState().pendingCommand).toBeNull();
+
+    begin();
+    const actor = structuredClone(snapshot);
+    actor.active_hand!.current_actor = 'guest_alice';
+    actor.active_hand!.legal_actions.actor = 'guest_alice';
+    store.getState().replaceSnapshot(actor);
+    expect(store.getState().pendingCommand).toBeNull();
+
+    begin();
+    const hand = structuredClone(snapshot);
+    hand.active_hand!.hand_number = 2;
+    store.getState().replaceSnapshot(hand);
+    expect(store.getState().pendingCommand).toBeNull();
+
+    begin();
+    store.getState().replaceSnapshot(openRoomSnapshot());
+    expect(store.getState().pendingCommand).toBeNull();
+  });
+
+  it('clears pending across disconnect and reconnect without replay state', () => {
+    const store = createRealtimeStore();
+    store.getState().tryBeginPokerCommand({
+      commandId: 'one',
+      type: 'fold',
+      handNumber: 1,
+      expectedActionSequence: 2,
+      actorGuestId: 'guest_host',
+    });
+    store.getState().markDisconnected();
+    expect(store.getState().pendingCommand).toBeNull();
+    store.getState().beginConnection('ABCDEFGH');
+    expect(store.getState().pendingCommand).toBeNull();
+  });
 });

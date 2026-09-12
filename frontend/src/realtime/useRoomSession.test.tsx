@@ -6,6 +6,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createBackendUrls } from '../api/backendUrls';
 import { activeRoomSnapshot, openRoomSnapshot } from '../test/roomSnapshots';
 import type { ServerMessage } from './messages';
+import {
+  pokerActionContextKey,
+  type PokerActionRequest,
+  type PokerCommand,
+} from './pokerActions';
 import type { RoomSocket, RoomSocketOptions } from './roomSocket';
 import { createRealtimeStore } from './realtimeStore';
 import {
@@ -27,11 +32,21 @@ const createInput: CreateRoomInput = {
 
 class FakeRoomSocket {
   closed = false;
+  sendFails = false;
+  readonly commands: PokerCommand[] = [];
 
   constructor(readonly options: RoomSocketOptions) {}
 
   close() {
     this.closed = true;
+  }
+
+  sendPokerCommand(command: PokerCommand) {
+    if (this.closed || this.sendFails) {
+      return false;
+    }
+    this.commands.push(command);
+    return true;
   }
 
   message(message: ServerMessage) {
@@ -279,5 +294,226 @@ describe('useRoomSession', () => {
     setupResult.unmount();
 
     expect(socket.closed).toBe(true);
+  });
+
+  it.each([
+    ['fold', undefined],
+    ['check', undefined],
+    ['call', undefined],
+    ['bet_to', 350],
+    ['raise_to', 500],
+  ] as const)('sends one current authoritative %s command', (type, totalTo) => {
+    const commandIdFactory = vi.fn(() => `id-${type}`);
+    const setupResult = setup({ commandIdFactory });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = activeRoomSnapshot();
+    const hand = snapshot.active_hand!;
+    if (type === 'check' || type === 'bet_to') {
+      hand.legal_actions.kinds = ['fold', 'check', 'bet'];
+      hand.legal_actions.call = null;
+      hand.legal_actions.raise_to = null;
+      hand.legal_actions.bet_to = {
+        minimum_full_to: 200,
+        maximum_to: 1_000,
+        short_all_in_to: null,
+      };
+    }
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+    });
+    const request: PokerActionRequest =
+      totalTo === undefined
+        ? { type, contextKey: pokerActionContextKey(hand, type) }
+        : { type, contextKey: pokerActionContextKey(hand, type), totalTo };
+
+    act(() => {
+      expect(setupResult.result.current.sendPokerAction(request)).toBe(true);
+      expect(setupResult.result.current.sendPokerAction(request)).toBe(false);
+    });
+
+    expect(commandIdFactory).toHaveBeenCalledOnce();
+    expect(socket.commands).toEqual([
+      {
+        type,
+        command_id: `id-${type}`,
+        hand_number: 1,
+        expected_action_sequence: 2,
+        ...(totalTo === undefined ? {} : { total: totalTo }),
+      },
+    ]);
+    expect(setupResult.store.getState().snapshot).toBe(snapshot);
+  });
+
+  it('retains pending on ack, clears on state advancement, and ignores late frames', () => {
+    const setupResult = setup({ commandIdFactory: () => 'command-1' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = activeRoomSnapshot();
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+      setupResult.result.current.sendPokerAction({
+        type: 'call',
+        contextKey: pokerActionContextKey(snapshot.active_hand!, 'call'),
+      });
+      socket.message({ type: 'command_ack', command_id: 'command-1' });
+    });
+    expect(setupResult.store.getState().pendingCommand?.commandId).toBe(
+      'command-1',
+    );
+
+    const advanced = activeRoomSnapshot();
+    advanced.active_hand!.action_sequence = 3;
+    advanced.active_hand!.current_actor = 'guest_alice';
+    advanced.active_hand!.legal_actions.actor = 'guest_alice';
+    act(() => {
+      socket.message({ type: 'state', snapshot: advanced });
+      socket.message({ type: 'command_ack', command_id: 'command-1' });
+      socket.message({
+        type: 'command_error',
+        command_id: 'command-1',
+        code: 'stale_game_state',
+        message: 'private server detail',
+      });
+    });
+    expect(setupResult.store.getState().pendingCommand).toBeNull();
+    expect(setupResult.store.getState().snapshot).toBe(advanced);
+    expect(setupResult.store.getState().lastCommandError).toBeNull();
+    expect(socket.commands).toHaveLength(1);
+  });
+
+  it('maps a matching error safely and rolls back a synchronous send failure', () => {
+    const setupResult = setup({ commandIdFactory: () => 'command-1' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = activeRoomSnapshot();
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+      setupResult.result.current.sendPokerAction({
+        type: 'call',
+        contextKey: pokerActionContextKey(snapshot.active_hand!, 'call'),
+      });
+      socket.message({
+        type: 'command_error',
+        command_id: 'command-1',
+        code: 'illegal_call',
+        message: 'private server detail',
+      });
+    });
+    expect(setupResult.store.getState()).toMatchObject({
+      pendingCommand: null,
+      snapshot,
+      lastCommandError: {
+        message: 'Calling is not available now.',
+      },
+    });
+    expect(String(setupResult.store.getState().lastCommandError)).not.toContain(
+      'private server detail',
+    );
+
+    socket.sendFails = true;
+    act(() => {
+      expect(
+        setupResult.result.current.sendPokerAction({
+          type: 'call',
+          contextKey: pokerActionContextKey(snapshot.active_hand!, 'call'),
+        }),
+      ).toBe(false);
+    });
+    expect(setupResult.store.getState().pendingCommand).toBeNull();
+    expect(setupResult.store.getState().lastCommandError?.code).toBe(
+      'action_send_failed',
+    );
+    expect(socket.commands).toHaveLength(1);
+  });
+
+  it('sends nothing while syncing, disconnected, stale, or superseded', () => {
+    const setupResult = setup({ commandIdFactory: () => 'command-1' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const first = setupResult.sockets[0]!;
+    const snapshot = activeRoomSnapshot();
+    const request = {
+      type: 'call' as const,
+      contextKey: pokerActionContextKey(snapshot.active_hand!, 'call'),
+    };
+    expect(setupResult.result.current.sendPokerAction(request)).toBe(false);
+    act(() => {
+      first.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+    });
+    expect(setupResult.result.current.sendPokerAction(request)).toBe(false);
+    act(() => {
+      first.message({ type: 'state', snapshot });
+      first.serverClose();
+    });
+    expect(setupResult.result.current.sendPokerAction(request)).toBe(false);
+    act(() => setupResult.result.current.reconnect());
+    expect(setupResult.result.current.sendPokerAction(request)).toBe(false);
+    expect(first.commands).toEqual([]);
+    expect(setupResult.sockets[1]!.commands).toEqual([]);
+  });
+
+  it('rejects inconsistent action state through the protocol fail-closed path', () => {
+    const setupResult = setup();
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = activeRoomSnapshot();
+    snapshot.active_hand!.legal_actions.kinds.push('check');
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+    });
+    expect(socket.closed).toBe(true);
+    expect(setupResult.store.getState()).toMatchObject({
+      status: 'disconnected',
+      lastConnectionError: { code: 'invalid_server_message' },
+    });
   });
 });

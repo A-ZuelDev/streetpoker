@@ -10,6 +10,12 @@ import { backendUrls } from '../env';
 import { getOrCreateGuestToken, type GuestTokenResult } from './guestToken';
 import type { ConnectFrame, ServerMessage } from './messages';
 import {
+  buildPokerCommand,
+  legalActionFactsAreConsistent,
+  safePokerCommandMessage,
+  type PokerActionRequest,
+} from './pokerActions';
+import {
   RoomSocket,
   type RoomSocketFactory,
   type RoomSocketOptions,
@@ -44,6 +50,7 @@ export interface SessionDependencies {
   ) => Promise<CreateRoomResponse>;
   readonly roomSocketFactory?: RoomSocketFactory;
   readonly guestTokenProvider?: () => GuestTokenResult;
+  readonly commandIdFactory?: () => string;
 }
 
 function unexpectedSessionError(): SessionError {
@@ -70,6 +77,7 @@ export function useRoomSession(
   const roomClient = dependencies.createRoomClient ?? createRoomRequest;
   const socketRef = useRef<RoomSocket | null>(null);
   const generationRef = useRef(0);
+  const socketGenerationRef = useRef(0);
   const inFlightRef = useRef(false);
   const confirmedMembershipRef = useRef(false);
   const mountedRef = useRef(true);
@@ -93,6 +101,7 @@ export function useRoomSession(
       const generation = generationRef.current;
       const previous = socketRef.current;
       socketRef.current = null;
+      socketGenerationRef.current = 0;
       previous?.close();
       store.getState().beginConnection(canonicalRoomCode);
       setEntryError(null);
@@ -137,6 +146,13 @@ export function useRoomSession(
               rejectProtocol();
               return;
             }
+            if (
+              message.snapshot.active_hand !== null &&
+              !legalActionFactsAreConsistent(message.snapshot.active_hand)
+            ) {
+              rejectProtocol();
+              return;
+            }
             state.replaceSnapshot(message.snapshot);
             return;
           case 'command_ack':
@@ -146,7 +162,7 @@ export function useRoomSession(
             state.receiveCommandError({
               commandId: message.command_id,
               code: message.code,
-              message: 'The server rejected a room command.',
+              message: safePokerCommandMessage(message.code),
             });
             return;
           case 'connection_error': {
@@ -186,6 +202,7 @@ export function useRoomSession(
           },
         });
         socketRef.current = candidate;
+        socketGenerationRef.current = generation;
       } catch {
         const error = unexpectedSessionError();
         store.getState().receiveConnectionError(error);
@@ -292,11 +309,84 @@ export function useRoomSession(
     generationRef.current += 1;
     const socket = socketRef.current;
     socketRef.current = null;
+    socketGenerationRef.current = 0;
     socket?.close();
     if (store.getState().status !== 'idle') {
       store.getState().markDisconnected();
     }
   }, [store]);
+
+  const sendPokerAction = useCallback(
+    (request: PokerActionRequest): boolean => {
+      const state = store.getState();
+      const socket = socketRef.current;
+      if (
+        state.status !== 'connected' ||
+        state.snapshot === null ||
+        state.guestId === null ||
+        state.pendingCommand !== null ||
+        socket === null ||
+        socketGenerationRef.current !== generationRef.current
+      ) {
+        return false;
+      }
+
+      let commandId: string;
+      try {
+        const factory =
+          dependencies.commandIdFactory ??
+          (() => {
+            if (typeof crypto.randomUUID !== 'function') {
+              throw new Error('Secure command IDs are unavailable.');
+            }
+            return crypto.randomUUID();
+          });
+        commandId = factory();
+      } catch {
+        state.reportLocalCommandError({
+          commandId: null,
+          code: 'command_id_unavailable',
+          message: 'A secure action identifier is unavailable.',
+        });
+        return false;
+      }
+
+      let command;
+      try {
+        command = buildPokerCommand({
+          snapshot: state.snapshot,
+          guestId: state.guestId,
+          request,
+          commandId,
+        });
+      } catch {
+        command = null;
+      }
+      if (command === null) {
+        return false;
+      }
+      const pending = {
+        commandId: command.command_id,
+        type: command.type,
+        handNumber: command.hand_number,
+        expectedActionSequence: command.expected_action_sequence,
+        actorGuestId: state.guestId,
+      };
+      if (!state.tryBeginPokerCommand(pending)) {
+        return false;
+      }
+      if (socket.sendPokerCommand(command)) {
+        return true;
+      }
+      store.getState().cancelPendingPokerCommand(command.command_id, {
+        commandId: command.command_id,
+        code: 'action_send_failed',
+        message: 'The action could not be sent. Reconnect before trying again.',
+      });
+      return false;
+    },
+    [dependencies.commandIdFactory, store],
+  );
 
   useEffect(() => {
     mountedRef.current = true;
@@ -305,6 +395,7 @@ export function useRoomSession(
       generationRef.current += 1;
       const socket = socketRef.current;
       socketRef.current = null;
+      socketGenerationRef.current = 0;
       socket?.close();
     };
   }, []);
@@ -318,5 +409,6 @@ export function useRoomSession(
     persistenceWarning,
     isCreating,
     canReconnect,
+    sendPokerAction,
   };
 }

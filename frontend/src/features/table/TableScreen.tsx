@@ -6,6 +6,7 @@ import { ActionBar } from './ActionBar';
 import { PokerTable } from './PokerTable';
 import type { OccupiedSeatView, TableDemoView } from './table.types';
 import type { ConnectionStatus } from '../../realtime/realtimeStore';
+import type { PokerActionRequest } from '../../realtime/pokerActions';
 import './table.css';
 import '../room/room.css';
 
@@ -16,6 +17,8 @@ interface TableScreenProps {
   connectionError?: string | null;
   persistenceWarning?: boolean;
   onReconnect?: () => void;
+  commandError?: string | null;
+  onPokerAction?: (request: PokerActionRequest) => boolean;
 }
 
 export function TableScreen({
@@ -25,6 +28,8 @@ export function TableScreen({
   connectionError = null,
   persistenceWarning = false,
   onReconnect,
+  commandError = null,
+  onPokerAction,
 }: TableScreenProps) {
   const [isRoomPanelOpen, setIsRoomPanelOpen] = useState(true);
   const hero = table.seats.find(
@@ -75,6 +80,9 @@ export function TableScreen({
             canStartHand={table.roomPanel.canStartHand}
             mode={table.mode}
             isHandActive={table.isHandActive}
+            liveActions={table.liveActions}
+            commandError={commandError}
+            {...(onPokerAction === undefined ? {} : { onPokerAction })}
           />
         </main>
         <RoomPanel

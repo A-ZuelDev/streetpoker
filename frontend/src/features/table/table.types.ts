@@ -60,6 +60,50 @@ export interface LegalActionsView {
   wager: WagerActionView | null;
 }
 
+export interface LiveActionButtonView<
+  Type extends 'fold' | 'check' | 'call' = 'fold' | 'check' | 'call',
+> {
+  type: Type;
+  label: string;
+  contextKey: string;
+  enabled: boolean;
+}
+
+interface LiveWagerBaseView {
+  commandType: 'bet_to' | 'raise_to';
+  label: 'Bet' | 'Raise';
+  contextKey: string;
+  minimumFullTo: number;
+  maximumTo: number;
+  enabled: boolean;
+}
+
+export interface LiveWagerRangeView extends LiveWagerBaseView {
+  selection: 'range';
+  shortAllInTo: null;
+  initialTotalTo: number;
+}
+
+export interface LiveWagerFixedView extends LiveWagerBaseView {
+  selection: 'fixed';
+  shortAllInTo: number;
+  initialTotalTo: number;
+}
+
+export type LiveWagerView = LiveWagerRangeView | LiveWagerFixedView;
+
+export interface LiveActionsView {
+  status:
+    'your-turn' | 'waiting' | 'watching' | 'syncing' | 'disconnected' | 'open';
+  statusLabel: string;
+  statusDetail: string;
+  protocolWarning: boolean;
+  pending: boolean;
+  fold: LiveActionButtonView<'fold'> | null;
+  middle: LiveActionButtonView<'check' | 'call'> | null;
+  wager: LiveWagerView | null;
+}
+
 export interface MemberView {
   nickname: string;
   status: string;
@@ -99,6 +143,7 @@ export interface TableView {
   board: readonly CardView[];
   seats: readonly SeatView[];
   legalActions: LegalActionsView | null;
+  liveActions: LiveActionsView | null;
   roomPanel: RoomPanelView;
   chat: readonly ChatMessageView[] | null;
 }

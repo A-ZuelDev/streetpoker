@@ -826,6 +826,26 @@
   border-color: rgb(255 255 255 / 20%);
 }
 
+.wager-control--fixed {
+  grid-template-columns: 1fr;
+}
+
+.wager-control__fixed-total {
+  color: var(--gold);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.action-feedback {
+  position: absolute;
+  right: 1rem;
+  bottom: 0.15rem;
+  max-width: min(30rem, 70%);
+  margin: 0;
+  color: #f0b7bb;
+  font-size: 0.62rem;
+}
+
 .action-waiting-copy {
   display: flex;
   flex-direction: column;
