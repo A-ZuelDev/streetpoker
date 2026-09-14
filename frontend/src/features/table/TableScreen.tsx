@@ -7,6 +7,7 @@ import { PokerTable } from './PokerTable';
 import type { OccupiedSeatView, TableDemoView } from './table.types';
 import type { ConnectionStatus } from '../../realtime/realtimeStore';
 import type { PokerActionRequest } from '../../realtime/pokerActions';
+import type { RoomCommandRequest } from '../../realtime/roomCommands';
 import './table.css';
 import '../room/room.css';
 
@@ -18,7 +19,9 @@ interface TableScreenProps {
   persistenceWarning?: boolean;
   onReconnect?: () => void;
   commandError?: string | null;
+  roomCommandError?: string | null;
   onPokerAction?: (request: PokerActionRequest) => boolean;
+  onRoomCommand?: (request: RoomCommandRequest) => boolean;
 }
 
 export function TableScreen({
@@ -29,7 +32,9 @@ export function TableScreen({
   persistenceWarning = false,
   onReconnect,
   commandError = null,
+  roomCommandError = null,
   onPokerAction,
+  onRoomCommand,
 }: TableScreenProps) {
   const [isRoomPanelOpen, setIsRoomPanelOpen] = useState(true);
   const hero = table.seats.find(
@@ -71,9 +76,22 @@ export function TableScreen({
           ) : null}
         </div>
       ) : null}
+      {roomCommandError === null ? null : (
+        <div className="session-banner" role="alert">
+          <span>{roomCommandError}</span>
+        </div>
+      )}
       <div className="table-screen__body">
         <main className="table-screen__game">
-          <PokerTable table={table} />
+          <PokerTable
+            table={table}
+            {...(onRoomCommand === undefined
+              ? {}
+              : {
+                  onRequestSeat: (seatIndex: number) =>
+                    onRoomCommand({ type: 'request_seat', seatIndex }),
+                })}
+          />
           <ActionBar
             hero={hero ?? null}
             legalActions={table.legalActions}
@@ -91,6 +109,8 @@ export function TableScreen({
           mode={table.mode}
           isOpen={isRoomPanelOpen}
           onToggle={() => setIsRoomPanelOpen((isOpen) => !isOpen)}
+          roomCode={table.roomCode}
+          {...(onRoomCommand === undefined ? {} : { onRoomCommand })}
         />
       </div>
     </div>

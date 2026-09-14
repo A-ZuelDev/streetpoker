@@ -12,6 +12,7 @@ import {
   type PokerCommand,
 } from './pokerActions';
 import type { RoomSocket, RoomSocketOptions } from './roomSocket';
+import type { RoomCommand, RoomCommandRequest } from './roomCommands';
 import { createRealtimeStore } from './realtimeStore';
 import {
   useRoomSession,
@@ -34,6 +35,7 @@ class FakeRoomSocket {
   closed = false;
   sendFails = false;
   readonly commands: PokerCommand[] = [];
+  readonly roomCommands: RoomCommand[] = [];
 
   constructor(readonly options: RoomSocketOptions) {}
 
@@ -49,6 +51,14 @@ class FakeRoomSocket {
     return true;
   }
 
+  sendRoomCommand(command: RoomCommand) {
+    if (this.closed || this.sendFails) {
+      return false;
+    }
+    this.roomCommands.push(command);
+    return true;
+  }
+
   message(message: ServerMessage) {
     this.options.events.onMessage(message);
   }
@@ -57,8 +67,8 @@ class FakeRoomSocket {
     this.options.events.onFailure(new Error('not used') as never);
   }
 
-  serverClose() {
-    this.options.events.onClose();
+  serverClose(close = { code: 1006, reason: '', wasClean: false }) {
+    this.options.events.onClose(close);
   }
 }
 
@@ -378,7 +388,7 @@ describe('useRoomSession', () => {
       });
       socket.message({ type: 'command_ack', command_id: 'command-1' });
     });
-    expect(setupResult.store.getState().pendingCommand?.commandId).toBe(
+    expect(setupResult.store.getState().pendingPokerCommand?.commandId).toBe(
       'command-1',
     );
 
@@ -396,9 +406,9 @@ describe('useRoomSession', () => {
         message: 'private server detail',
       });
     });
-    expect(setupResult.store.getState().pendingCommand).toBeNull();
+    expect(setupResult.store.getState().pendingPokerCommand).toBeNull();
     expect(setupResult.store.getState().snapshot).toBe(advanced);
-    expect(setupResult.store.getState().lastCommandError).toBeNull();
+    expect(setupResult.store.getState().lastPokerCommandError).toBeNull();
     expect(socket.commands).toHaveLength(1);
   });
 
@@ -431,15 +441,15 @@ describe('useRoomSession', () => {
       });
     });
     expect(setupResult.store.getState()).toMatchObject({
-      pendingCommand: null,
+      pendingPokerCommand: null,
       snapshot,
-      lastCommandError: {
+      lastPokerCommandError: {
         message: 'Calling is not available now.',
       },
     });
-    expect(String(setupResult.store.getState().lastCommandError)).not.toContain(
-      'private server detail',
-    );
+    expect(
+      String(setupResult.store.getState().lastPokerCommandError),
+    ).not.toContain('private server detail');
 
     socket.sendFails = true;
     act(() => {
@@ -450,8 +460,8 @@ describe('useRoomSession', () => {
         }),
       ).toBe(false);
     });
-    expect(setupResult.store.getState().pendingCommand).toBeNull();
-    expect(setupResult.store.getState().lastCommandError?.code).toBe(
+    expect(setupResult.store.getState().pendingPokerCommand).toBeNull();
+    expect(setupResult.store.getState().lastPokerCommandError?.code).toBe(
       'action_send_failed',
     );
     expect(socket.commands).toHaveLength(1);
@@ -515,5 +525,355 @@ describe('useRoomSession', () => {
       status: 'disconnected',
       lastConnectionError: { code: 'invalid_server_message' },
     });
+  });
+
+  it('sends one exact room command and holds it through ack until state', () => {
+    const setupResult = setup({ commandIdFactory: () => 'room-command' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = openRoomSnapshot();
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+      expect(
+        setupResult.result.current.sendRoomCommand({
+          type: 'request_seat',
+          seatIndex: 0,
+        }),
+      ).toBe(true);
+      expect(
+        setupResult.result.current.sendRoomCommand({
+          type: 'request_seat',
+          seatIndex: 0,
+        }),
+      ).toBe(false);
+    });
+    expect(socket.roomCommands).toEqual([
+      {
+        type: 'request_seat',
+        command_id: 'room-command',
+        seat_index: 0,
+      },
+    ]);
+    expect(setupResult.store.getState().snapshot).toBe(snapshot);
+    act(() => {
+      socket.message({ type: 'command_ack', command_id: 'room-command' });
+    });
+    expect(setupResult.store.getState().pendingRoomCommand?.acknowledged).toBe(
+      true,
+    );
+    act(() => {
+      socket.message({ type: 'state', snapshot: structuredClone(snapshot) });
+    });
+    expect(setupResult.store.getState().pendingRoomCommand).toBeNull();
+  });
+
+  it('uses exact next_hand_number and local room error text', () => {
+    const setupResult = setup({ commandIdFactory: () => 'start-command' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = openRoomSnapshot();
+    snapshot.next_hand_number = 9;
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+      setupResult.result.current.sendRoomCommand({ type: 'start_hand' });
+      socket.message({
+        type: 'command_error',
+        command_id: 'start-command',
+        code: 'insufficient_players',
+        message: 'private server player detail',
+      });
+    });
+    expect(socket.roomCommands).toEqual([
+      {
+        type: 'start_hand',
+        command_id: 'start-command',
+        hand_number: 9,
+      },
+    ]);
+    expect(setupResult.store.getState().lastRoomCommandError?.message).toBe(
+      'At least two eligible seated players are required.',
+    );
+    expect(JSON.stringify(setupResult.store.getState())).not.toContain(
+      'private server player detail',
+    );
+  });
+
+  it('sends the remaining room command families with exact wire fields', () => {
+    const requestedSnapshot = () => {
+      const snapshot = openRoomSnapshot();
+      snapshot.room.seat_requests = [
+        {
+          guest_id: 'guest_alice',
+          nickname: 'Alice',
+          seat_index: 0,
+        },
+      ];
+      return snapshot;
+    };
+    const cases: readonly {
+      guestId: string;
+      snapshot: ReturnType<typeof openRoomSnapshot>;
+      request: RoomCommandRequest;
+      expected: RoomCommand;
+    }[] = [
+      {
+        guestId: 'guest_host',
+        snapshot: requestedSnapshot(),
+        request: { type: 'approve_seat', targetGuestId: 'guest_alice' },
+        expected: {
+          type: 'approve_seat',
+          command_id: 'room-command',
+          target_guest_id: 'guest_alice',
+        },
+      },
+      {
+        guestId: 'guest_host',
+        snapshot: requestedSnapshot(),
+        request: { type: 'reject_seat', targetGuestId: 'guest_alice' },
+        expected: {
+          type: 'reject_seat',
+          command_id: 'room-command',
+          target_guest_id: 'guest_alice',
+        },
+      },
+      {
+        guestId: 'guest_alice',
+        snapshot: openRoomSnapshot(),
+        request: { type: 'stand' },
+        expected: { type: 'stand', command_id: 'room-command' },
+      },
+      {
+        guestId: 'guest_host',
+        snapshot: openRoomSnapshot(),
+        request: { type: 'kick', targetGuestId: 'guest_alice' },
+        expected: {
+          type: 'kick',
+          command_id: 'room-command',
+          target_guest_id: 'guest_alice',
+        },
+      },
+      {
+        guestId: 'guest_host',
+        snapshot: openRoomSnapshot(),
+        request: {
+          type: 'update_settings',
+          patch: { room_name: 'Saturday Night', password: null },
+        },
+        expected: {
+          type: 'update_settings',
+          command_id: 'room-command',
+          room_name: 'Saturday Night',
+          password: null,
+        },
+      },
+      {
+        guestId: 'guest_host',
+        snapshot: openRoomSnapshot(),
+        request: { type: 'close_room' },
+        expected: { type: 'close_room', command_id: 'room-command' },
+      },
+    ];
+
+    for (const commandCase of cases) {
+      const setupResult = setup({ commandIdFactory: () => 'room-command' });
+      act(() => {
+        setupResult.result.current.joinRoom({
+          roomCode: 'ABCDEFGH',
+          nickname: 'Mara',
+        });
+      });
+      const socket = setupResult.sockets[0]!;
+      act(() => {
+        socket.message({
+          type: 'connected',
+          guest_id: commandCase.guestId,
+          room_code: 'ABCDEFGH',
+        });
+        socket.message({ type: 'state', snapshot: commandCase.snapshot });
+        expect(
+          setupResult.result.current.sendRoomCommand(commandCase.request),
+        ).toBe(true);
+      });
+      expect(socket.roomCommands).toEqual([commandCase.expected]);
+      setupResult.unmount();
+    }
+  });
+
+  it('ends leave on matching ack and ignores later frames', () => {
+    const setupResult = setup({ commandIdFactory: () => 'leave-command' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Alice',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = openRoomSnapshot();
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_alice',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+      setupResult.result.current.sendRoomCommand({ type: 'leave' });
+      socket.message({ type: 'command_ack', command_id: 'leave-command' });
+      socket.message({ type: 'state', snapshot: activeRoomSnapshot() });
+    });
+    expect(setupResult.store.getState()).toMatchObject({
+      status: 'idle',
+      snapshot: null,
+      guestId: null,
+      roomExit: { kind: 'left' },
+    });
+    expect(setupResult.result.current.canReconnect).toBe(false);
+    expect(setupResult.result.current.sendRoomCommand({ type: 'leave' })).toBe(
+      false,
+    );
+  });
+
+  it('classifies only exact terminal closes and preserves reconnect otherwise', () => {
+    const kicked = setup();
+    act(() => {
+      kicked.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Alice',
+      });
+    });
+    const kickedSocket = kicked.sockets[0]!;
+    act(() => {
+      kickedSocket.message({
+        type: 'connected',
+        guest_id: 'guest_alice',
+        room_code: 'ABCDEFGH',
+      });
+      kickedSocket.message({ type: 'state', snapshot: openRoomSnapshot() });
+      kickedSocket.serverClose({
+        code: 1008,
+        reason: 'removed from room',
+        wasClean: true,
+      });
+    });
+    expect(kicked.store.getState().roomExit?.kind).toBe('kicked');
+    expect(kicked.result.current.canReconnect).toBe(false);
+
+    const unknown = setup();
+    act(() => {
+      unknown.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const unknownSocket = unknown.sockets[0]!;
+    act(() => {
+      unknownSocket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      unknownSocket.message({ type: 'state', snapshot: openRoomSnapshot() });
+      unknownSocket.serverClose({
+        code: 1008,
+        reason: 'removed from room later',
+        wasClean: true,
+      });
+    });
+    expect(unknown.store.getState().roomExit).toBeNull();
+    expect(unknown.store.getState().status).toBe('disconnected');
+    expect(unknown.result.current.canReconnect).toBe(true);
+  });
+
+  it.each([
+    ['room_closed', 'closed'],
+    ['membership_required', 'kicked'],
+  ] as const)(
+    'ends a stale confirmed session when reconnect receives %s',
+    (code, expectedExit) => {
+      const setupResult = setup();
+      act(() => {
+        setupResult.result.current.joinRoom({
+          roomCode: 'ABCDEFGH',
+          nickname: 'Mara',
+        });
+      });
+      const first = setupResult.sockets[0]!;
+      act(() => {
+        first.message({
+          type: 'connected',
+          guest_id: 'guest_host',
+          room_code: 'ABCDEFGH',
+        });
+        first.message({ type: 'state', snapshot: openRoomSnapshot() });
+        first.serverClose();
+        setupResult.result.current.reconnect();
+      });
+      const reconnect = setupResult.sockets[1]!;
+      act(() => {
+        reconnect.message({
+          type: 'connection_error',
+          code,
+          message: 'private terminal detail',
+        });
+      });
+      expect(setupResult.store.getState()).toMatchObject({
+        status: 'idle',
+        snapshot: null,
+        guestId: null,
+        roomExit: { kind: expectedExit },
+      });
+      expect(setupResult.result.current.canReconnect).toBe(false);
+      expect(JSON.stringify(setupResult.store.getState())).not.toContain(
+        'private terminal detail',
+      );
+    },
+  );
+
+  it('ends on an authoritative closed state before the later close frame', () => {
+    const setupResult = setup();
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const closed = openRoomSnapshot();
+    closed.room.status = 'closed';
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot: openRoomSnapshot() });
+      socket.message({ type: 'state', snapshot: closed });
+      socket.serverClose({ code: 1000, reason: 'room closed', wasClean: true });
+    });
+    expect(setupResult.store.getState().roomExit).toEqual({
+      kind: 'closed',
+      roomCode: 'ABCDEFGH',
+      roomName: 'Friday Night',
+    });
+    expect(setupResult.result.current.canReconnect).toBe(false);
   });
 });

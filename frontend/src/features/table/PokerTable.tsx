@@ -5,6 +5,7 @@ import type { SeatView, TableDemoView } from './table.types';
 
 interface PokerTableProps {
   table: TableDemoView;
+  onRequestSeat?: (seatIndex: number) => void;
 }
 
 const boardSlots = [0, 1, 2, 3, 4] as const;
@@ -34,7 +35,7 @@ function ContributionMarker({ seat }: { seat: SeatView }) {
   );
 }
 
-export function PokerTable({ table }: PokerTableProps) {
+export function PokerTable({ table, onRequestSeat }: PokerTableProps) {
   return (
     <section className="poker-stage" aria-label="Six-max poker table">
       <div className="poker-table">
@@ -72,6 +73,7 @@ export function PokerTable({ table }: PokerTableProps) {
           key={seat.seatIndex}
           seat={seat}
           interactiveDemo={table.mode === 'demo'}
+          {...(onRequestSeat === undefined ? {} : { onRequestSeat })}
         />
       ))}
     </section>

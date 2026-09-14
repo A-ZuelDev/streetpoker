@@ -30,9 +30,9 @@ class FakeWebSocket extends EventTarget {
     this.dispatchEvent(new MessageEvent('message', { data }));
   }
 
-  serverClose() {
+  serverClose(code = 1000, reason = '', wasClean = true) {
     this.readyState = WebSocket.CLOSED;
-    this.dispatchEvent(new CloseEvent('close'));
+    this.dispatchEvent(new CloseEvent('close', { code, reason, wasClean }));
   }
 }
 
@@ -172,6 +172,51 @@ describe('RoomSocket', () => {
     roomSocket.close();
     expect(roomSocket.sendPokerCommand(command)).toBe(false);
     expect(fake.sent).toHaveLength(2);
+  });
+
+  it('sends strict room commands only while open and rejects other families', () => {
+    const { fake, roomSocket } = setup();
+    const command = {
+      type: 'request_seat' as const,
+      command_id: 'room-1',
+      seat_index: 4,
+    };
+    expect(roomSocket.sendRoomCommand(command)).toBe(false);
+    fake.open();
+    expect(roomSocket.sendRoomCommand(command)).toBe(true);
+    expect(
+      roomSocket.sendRoomCommand({
+        type: 'start_hand',
+        command_id: 'bad',
+        hand_number: Number.MAX_SAFE_INTEGER + 1,
+      }),
+    ).toBe(false);
+    expect(
+      roomSocket.sendRoomCommand({
+        type: 'connect',
+        guest_token: 'A'.repeat(43),
+      } as never),
+    ).toBe(false);
+    expect(
+      roomSocket.sendRoomCommand({
+        type: 'fold',
+        command_id: 'poker',
+        hand_number: 1,
+        expected_action_sequence: 0,
+      } as never),
+    ).toBe(false);
+    expect(fake.sent.map((value) => JSON.parse(value))).toHaveLength(2);
+  });
+
+  it('exposes close metadata without interpreting the reason', () => {
+    const { fake, events } = setup();
+    fake.open();
+    fake.serverClose(1008, 'removed from room', true);
+    expect(events.onClose).toHaveBeenCalledWith({
+      code: 1008,
+      reason: 'removed from room',
+      wasClean: true,
+    });
   });
 
   it('does not send or queue an invalid poker command', () => {

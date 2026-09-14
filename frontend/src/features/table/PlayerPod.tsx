@@ -5,6 +5,7 @@ import type { OccupiedSeatView, SeatView } from './table.types';
 interface PlayerPodProps {
   seat: SeatView;
   interactiveDemo: boolean;
+  onRequestSeat?: (seatIndex: number) => void;
 }
 
 const stateLabels: Record<OccupiedSeatView['state'], string> = {
@@ -46,24 +47,34 @@ function SeatCards({ seat }: { seat: OccupiedSeatView }) {
   );
 }
 
-export function PlayerPod({ seat, interactiveDemo }: PlayerPodProps) {
+export function PlayerPod({
+  seat,
+  interactiveDemo,
+  onRequestSeat,
+}: PlayerPodProps) {
   if (seat.kind === 'empty') {
     return (
       <div
         className={`table-seat table-seat--${seat.position}`}
         data-seat-index={seat.seatIndex}
       >
-        {interactiveDemo ? (
+        {interactiveDemo || seat.requestLabel !== undefined ? (
           <button
             className="player-pod player-pod--empty"
             type="button"
-            aria-label={`Request empty seat ${seat.seatIndex + 1}`}
-            title="Demo only"
+            aria-label={
+              interactiveDemo
+                ? `Request empty seat ${seat.seatIndex + 1}`
+                : seat.requestLabel
+            }
+            disabled={!interactiveDemo && !seat.canRequest}
+            {...(interactiveDemo ? { title: 'Demo only' } : {})}
+            onClick={() => onRequestSeat?.(seat.seatIndex)}
           >
             <span className="player-pod__empty-icon" aria-hidden="true">
               +
             </span>
-            <span>Open seat</span>
+            <span>{seat.requested ? 'Requested' : 'Open seat'}</span>
           </button>
         ) : (
           <div

@@ -308,6 +308,125 @@
   background: rgb(255 255 255 / 2.4%);
 }
 
+.member-row:has(.member-row__kick),
+.member-row:has(.room-panel__confirm) {
+  grid-template-columns: 1.65rem minmax(0, 1fr) auto auto;
+}
+
+.member-row__kick,
+.host-controls-grid button,
+.room-panel__confirm button,
+.room-settings button {
+  min-height: 1.8rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid rgb(255 255 255 / 12%);
+  border-radius: 0.35rem;
+  color: #c4d0c9;
+  background: rgb(255 255 255 / 5%);
+  font-size: 0.54rem;
+  font-weight: 740;
+}
+
+.member-row__kick {
+  color: #d9aeb1;
+}
+
+.room-panel__confirm {
+  display: flex;
+  grid-column: 1 / -1;
+  gap: 0.35rem;
+}
+
+.room-panel__confirm button {
+  flex: 1;
+}
+
+.room-panel__danger {
+  color: #e2b5b8 !important;
+  border-color: rgb(210 104 110 / 24%) !important;
+  background: rgb(210 104 110 / 7%) !important;
+}
+
+.room-panel__waiting {
+  display: block;
+  margin-top: 0.45rem;
+}
+
+.room-panel__command-error,
+.room-settings__error {
+  margin: 0.5rem 0 0;
+  color: #efb8bb;
+  font-size: 0.58rem;
+  line-height: 1.4;
+}
+
+.room-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.room-settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.22rem;
+  color: #aebbb4;
+  font-size: 0.55rem;
+}
+
+.room-settings input,
+.room-settings select {
+  width: 100%;
+  min-width: 0;
+  height: 1.9rem;
+  padding: 0.3rem 0.42rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  color: var(--text);
+  background: #090d0b;
+  font: inherit;
+}
+
+.room-settings__numbers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+
+.room-settings .room-settings__check {
+  flex-direction: row;
+  align-items: center;
+}
+
+.room-settings__check input {
+  width: auto;
+  height: auto;
+}
+
+.room-settings > small {
+  color: var(--room-text-muted);
+  font-size: 0.5rem;
+}
+
+.room-settings__readonly {
+  display: grid;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.room-settings__readonly div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.room-settings__readonly dt,
+.room-settings__readonly dd {
+  margin: 0;
+  color: var(--room-text-muted);
+  font-size: 0.52rem;
+}
+
 .member-row__avatar {
   display: grid;
   width: 1.65rem;

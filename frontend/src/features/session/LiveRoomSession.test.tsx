@@ -166,7 +166,22 @@ describe('LiveRoomSession', () => {
     expect(socket.url).toBe('ws://127.0.0.1:8000/ws/rooms/ABCDEFGH');
     expect(socket.url).not.toContain('Mara');
     expect(socket.url).not.toContain('private-password');
-    connectAndState(socket);
+    const unseated = openRoomSnapshot();
+    unseated.room.members[1]!.status = 'in_room';
+    unseated.room.members[1]!.stack = null;
+    unseated.room.seats[1] = {
+      seat_index: 1,
+      guest_id: null,
+      nickname: null,
+      stack: null,
+    };
+    socket.serverOpen();
+    socket.serverMessage({
+      type: 'connected',
+      guest_id: 'guest_alice',
+      room_code: 'ABCDEFGH',
+    });
+    socket.serverMessage({ type: 'state', snapshot: unseated });
 
     expect(await screen.findByText('Not seated')).toBeInTheDocument();
     expect(screen.getByText('Watching the table')).toBeInTheDocument();

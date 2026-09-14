@@ -54,7 +54,7 @@ describe('realtimeStore', () => {
     store.getState().replaceSnapshot(first);
     store.getState().replaceSnapshot(second);
     store.getState().receiveCommandAck('one');
-    store.getState().receiveCommandError({
+    store.getState().receivePokerCommandError({
       commandId: 'one',
       code: 'rejected',
       message: 'The server rejected a room command.',
@@ -106,7 +106,7 @@ describe('realtimeStore', () => {
       store.getState().tryBeginPokerCommand({ ...pending, commandId: 'two' }),
     ).toBe(false);
     store.getState().receiveCommandAck('one');
-    expect(store.getState().pendingCommand).toEqual(pending);
+    expect(store.getState().pendingPokerCommand).toEqual(pending);
   });
 
   it('clears only a matching command error and never mutates the snapshot', () => {
@@ -120,18 +120,18 @@ describe('realtimeStore', () => {
       expectedActionSequence: 2,
       actorGuestId: 'guest_host',
     });
-    store.getState().receiveCommandError({
+    store.getState().receivePokerCommandError({
       commandId: 'other',
       code: 'illegal_call',
       message: 'safe',
     });
-    expect(store.getState().pendingCommand?.commandId).toBe('one');
-    store.getState().receiveCommandError({
+    expect(store.getState().pendingPokerCommand?.commandId).toBe('one');
+    store.getState().receivePokerCommandError({
       commandId: 'one',
       code: 'illegal_call',
       message: 'Calling is not available now.',
     });
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
     expect(store.getState().snapshot).toBe(snapshot);
   });
 
@@ -149,29 +149,29 @@ describe('realtimeStore', () => {
 
     begin();
     store.getState().replaceSnapshot(structuredClone(snapshot));
-    expect(store.getState().pendingCommand).not.toBeNull();
+    expect(store.getState().pendingPokerCommand).not.toBeNull();
 
     const sequence = structuredClone(snapshot);
     sequence.active_hand!.action_sequence = 3;
     store.getState().replaceSnapshot(sequence);
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
 
     begin();
     const actor = structuredClone(snapshot);
     actor.active_hand!.current_actor = 'guest_alice';
     actor.active_hand!.legal_actions.actor = 'guest_alice';
     store.getState().replaceSnapshot(actor);
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
 
     begin();
     const hand = structuredClone(snapshot);
     hand.active_hand!.hand_number = 2;
     store.getState().replaceSnapshot(hand);
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
 
     begin();
     store.getState().replaceSnapshot(openRoomSnapshot());
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
   });
 
   it('clears pending across disconnect and reconnect without replay state', () => {
@@ -184,8 +184,107 @@ describe('realtimeStore', () => {
       actorGuestId: 'guest_host',
     });
     store.getState().markDisconnected();
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
     store.getState().beginConnection('ABCDEFGH');
-    expect(store.getState().pendingCommand).toBeNull();
+    expect(store.getState().pendingPokerCommand).toBeNull();
+  });
+
+  it('holds room pending through matching ack until a later state', () => {
+    const store = createRealtimeStore();
+    const first = openRoomSnapshot();
+    store.getState().replaceSnapshot(first);
+    expect(
+      store.getState().tryBeginRoomCommand({
+        commandId: 'room-one',
+        type: 'request_seat',
+        seatIndex: 0,
+        acknowledged: false,
+      }),
+    ).toBe(true);
+
+    const preAck = structuredClone(first);
+    preAck.room.settings.room_name = 'Unrelated state';
+    store.getState().replaceSnapshot(preAck);
+    expect(store.getState().pendingRoomCommand?.acknowledged).toBe(false);
+
+    store.getState().receiveCommandAck('other');
+    expect(store.getState().pendingRoomCommand?.acknowledged).toBe(false);
+    store.getState().receiveCommandAck('room-one');
+    expect(store.getState().pendingRoomCommand?.acknowledged).toBe(true);
+    expect(store.getState().snapshot).toBe(preAck);
+
+    const postAck = structuredClone(preAck);
+    postAck.room.seat_requests = [
+      { guest_id: 'guest_host', nickname: 'Mara', seat_index: 0 },
+    ];
+    store.getState().replaceSnapshot(postAck);
+    expect(store.getState().pendingRoomCommand).toBeNull();
+    expect(store.getState().snapshot).toBe(postAck);
+  });
+
+  it('enforces a synchronous mutex across room and poker command families', () => {
+    const store = createRealtimeStore();
+    const room = {
+      commandId: 'room',
+      type: 'stand' as const,
+      acknowledged: false,
+    };
+    const poker = {
+      commandId: 'poker',
+      type: 'fold' as const,
+      handNumber: 1,
+      expectedActionSequence: 2,
+      actorGuestId: 'guest_host',
+    };
+    expect(store.getState().tryBeginRoomCommand(room)).toBe(true);
+    expect(store.getState().tryBeginPokerCommand(poker)).toBe(false);
+    store.getState().cancelPendingRoomCommand('room');
+    expect(store.getState().tryBeginPokerCommand(poker)).toBe(true);
+    expect(store.getState().tryBeginRoomCommand(room)).toBe(false);
+  });
+
+  it('clears only a matching room error and never mutates the snapshot', () => {
+    const store = createRealtimeStore();
+    const snapshot = openRoomSnapshot();
+    store.getState().replaceSnapshot(snapshot);
+    store.getState().tryBeginRoomCommand({
+      commandId: 'room',
+      type: 'stand',
+      acknowledged: false,
+    });
+    store.getState().receiveRoomCommandError({
+      commandId: 'other',
+      code: 'not_seated',
+      message: 'safe',
+    });
+    expect(store.getState().pendingRoomCommand?.commandId).toBe('room');
+    store.getState().receiveRoomCommandError({
+      commandId: 'room',
+      code: 'not_seated',
+      message: 'You are not currently seated.',
+    });
+    expect(store.getState().pendingRoomCommand).toBeNull();
+    expect(store.getState().snapshot).toBe(snapshot);
+  });
+
+  it('ends a room session without retaining actionable identity or snapshots', () => {
+    const store = createRealtimeStore();
+    store.getState().beginConnection('ABCDEFGH');
+    store.getState().receiveConnected('guest_host', 'ABCDEFGH');
+    store.getState().replaceSnapshot(openRoomSnapshot());
+    store.getState().endRoomSession({
+      kind: 'kicked',
+      roomCode: 'ABCDEFGH',
+      roomName: 'Friday Night',
+    });
+    expect(store.getState()).toMatchObject({
+      status: 'idle',
+      roomCode: null,
+      guestId: null,
+      snapshot: null,
+      pendingPokerCommand: null,
+      pendingRoomCommand: null,
+      roomExit: { kind: 'kicked' },
+    });
   });
 });
