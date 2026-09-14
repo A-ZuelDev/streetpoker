@@ -118,12 +118,21 @@ test('joins over a credential-free canonical socket URL as an unseated viewer', 
   harness.sockets[0]!.send(
     JSON.stringify({
       type: 'connected',
-      guest_id: 'guest_host',
+      guest_id: 'guest_alice',
       room_code: 'ABCDEFGH',
     }),
   );
+  const unseatedSnapshot = openRoomSnapshot();
+  unseatedSnapshot.room.members[1]!.status = 'in_room';
+  unseatedSnapshot.room.members[1]!.stack = null;
+  unseatedSnapshot.room.seats[1] = {
+    seat_index: 1,
+    guest_id: null,
+    nickname: null,
+    stack: null,
+  };
   harness.sockets[0]!.send(
-    JSON.stringify({ type: 'state', snapshot: openRoomSnapshot() }),
+    JSON.stringify({ type: 'state', snapshot: unseatedSnapshot }),
   );
   await expect(page.getByText('Not seated')).toBeVisible();
   await expect(page.getByText('Watching the table')).toBeVisible();

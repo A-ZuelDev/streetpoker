@@ -8,6 +8,7 @@ import type {
   SessionError,
   SessionErrorField,
 } from '../../realtime/sessionError';
+import type { RoomExitState } from '../../realtime/realtimeStore';
 
 interface RoomEntryProps {
   busy: boolean;
@@ -18,6 +19,7 @@ interface RoomEntryProps {
   onCreate(input: CreateRoomInput): Promise<void>;
   onJoin(input: JoinRoomInput): void;
   onReconnect(): void;
+  roomExit?: RoomExitState | null;
 }
 
 function positiveSafeInteger(value: string): number | null {
@@ -34,6 +36,7 @@ export function RoomEntry({
   onCreate,
   onJoin,
   onReconnect,
+  roomExit = null,
 }: RoomEntryProps) {
   const [activeForm, setActiveForm] = useState<'create' | 'join' | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -59,6 +62,14 @@ export function RoomEntry({
   };
   const generalError =
     error !== null && error.field === null ? error.message : localError;
+  const roomExitMessage =
+    roomExit?.kind === 'left'
+      ? 'You left the room.'
+      : roomExit?.kind === 'kicked'
+        ? 'You were removed from the room.'
+        : roomExit?.kind === 'closed'
+          ? 'This room was closed.'
+          : null;
 
   const submitCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -133,6 +144,14 @@ export function RoomEntry({
       {generalError !== null ? (
         <p className="session-entry__alert" role="alert">
           {generalError}
+        </p>
+      ) : null}
+      {roomExitMessage !== null ? (
+        <p className="session-entry__status" role="status">
+          {roomExitMessage}
+          {roomExit === null || roomExit.roomName === null
+            ? null
+            : ` ${roomExit.roomName}`}
         </p>
       ) : null}
       {statusText !== null ? (

@@ -17,10 +17,16 @@ import {
 } from './pokerActions';
 import {
   RoomSocket,
+  type RoomSocketClose,
   type RoomSocketFactory,
   type RoomSocketOptions,
 } from './roomSocket';
 import type { RealtimeStore } from './realtimeStore';
+import {
+  buildRoomCommand,
+  safeRoomCommandMessage,
+  type RoomCommandRequest,
+} from './roomCommands';
 import {
   connectionSessionError,
   SessionError,
@@ -59,6 +65,21 @@ function unexpectedSessionError(): SessionError {
     code: 'session_error',
     message: 'The room session could not be started.',
   });
+}
+
+export function classifyRoomSocketClose(
+  close: RoomSocketClose,
+): 'left' | 'kicked' | 'closed' | null {
+  if (close.code === 1000 && close.reason === 'left room') {
+    return 'left';
+  }
+  if (close.code === 1008 && close.reason === 'removed from room') {
+    return 'kicked';
+  }
+  if (close.code === 1000 && close.reason === 'room closed') {
+    return 'closed';
+  }
+  return null;
 }
 
 export function useRoomSession(
@@ -112,6 +133,29 @@ export function useRoomSession(
         generationRef.current === generation &&
         candidate !== null &&
         socketRef.current === candidate;
+      const finishRoomExit = (
+        kind: 'left' | 'kicked' | 'closed',
+        snapshot = store.getState().snapshot,
+      ) => {
+        if (!isCurrent()) {
+          return;
+        }
+        const roomName = snapshot?.room.settings.room_name ?? null;
+        const safeRoomCode = snapshot?.room.room_code ?? canonicalRoomCode;
+        confirmedMembershipRef.current = false;
+        setCanReconnect(false);
+        setEntryError(null);
+        inFlightRef.current = false;
+        generationRef.current += 1;
+        socketRef.current = null;
+        socketGenerationRef.current = 0;
+        candidate?.close();
+        store.getState().endRoomSession({
+          kind,
+          roomCode: safeRoomCode,
+          roomName,
+        });
+      };
       const rejectProtocol = () => {
         if (!isCurrent()) {
           return;
@@ -154,18 +198,57 @@ export function useRoomSession(
               return;
             }
             state.replaceSnapshot(message.snapshot);
+            if (message.snapshot.room.status === 'closed') {
+              finishRoomExit('closed', message.snapshot);
+            }
             return;
-          case 'command_ack':
+          case 'command_ack': {
+            const pendingRoom = state.pendingRoomCommand;
             state.receiveCommandAck(message.command_id);
+            if (
+              pendingRoom?.commandId === message.command_id &&
+              pendingRoom.type === 'leave'
+            ) {
+              finishRoomExit('left');
+            }
             return;
-          case 'command_error':
-            state.receiveCommandError({
+          }
+          case 'command_error': {
+            const error = {
               commandId: message.command_id,
               code: message.code,
-              message: safePokerCommandMessage(message.code),
-            });
+              message: '',
+            };
+            if (
+              state.pendingRoomCommand !== null &&
+              message.command_id === state.pendingRoomCommand.commandId
+            ) {
+              state.receiveRoomCommandError({
+                ...error,
+                message: safeRoomCommandMessage(message.code),
+              });
+            } else if (
+              state.pendingPokerCommand !== null &&
+              message.command_id === state.pendingPokerCommand.commandId
+            ) {
+              state.receivePokerCommandError({
+                ...error,
+                message: safePokerCommandMessage(message.code),
+              });
+            }
             return;
+          }
           case 'connection_error': {
+            if (confirmedMembershipRef.current) {
+              if (message.code === 'room_closed') {
+                finishRoomExit('closed');
+                return;
+              }
+              if (message.code === 'membership_required') {
+                finishRoomExit('kicked');
+                return;
+              }
+            }
             const error = connectionSessionError(message.code);
             state.receiveConnectionError(error);
             setEntryError(error);
@@ -192,12 +275,17 @@ export function useRoomSession(
               inFlightRef.current = false;
               candidate?.close();
             },
-            onClose() {
+            onClose(close) {
               if (!isCurrent()) {
                 return;
               }
               inFlightRef.current = false;
-              store.getState().markDisconnected();
+              const terminal = classifyRoomSocketClose(close);
+              if (terminal === null) {
+                store.getState().markDisconnected();
+              } else {
+                finishRoomExit(terminal);
+              }
             },
           },
         });
@@ -218,6 +306,7 @@ export function useRoomSession(
       if (inFlightRef.current) {
         return;
       }
+      store.getState().resetSession();
       inFlightRef.current = true;
       setIsCreating(true);
       confirmedMembershipRef.current = false;
@@ -259,7 +348,7 @@ export function useRoomSession(
         }
       }
     },
-    [openSocket, roomClient, stableToken],
+    [openSocket, roomClient, stableToken, store],
   );
 
   const joinRoom = useCallback(
@@ -267,6 +356,7 @@ export function useRoomSession(
       if (inFlightRef.current) {
         return;
       }
+      store.getState().resetSession();
       inFlightRef.current = true;
       try {
         const roomCode = canonicalizeRoomCode(input.roomCode);
@@ -286,7 +376,7 @@ export function useRoomSession(
         );
       }
     },
-    [openSocket, stableToken],
+    [openSocket, stableToken, store],
   );
 
   const reconnect = useCallback(() => {
@@ -324,7 +414,8 @@ export function useRoomSession(
         state.status !== 'connected' ||
         state.snapshot === null ||
         state.guestId === null ||
-        state.pendingCommand !== null ||
+        state.pendingPokerCommand !== null ||
+        state.pendingRoomCommand !== null ||
         socket === null ||
         socketGenerationRef.current !== generationRef.current
       ) {
@@ -343,7 +434,7 @@ export function useRoomSession(
           });
         commandId = factory();
       } catch {
-        state.reportLocalCommandError({
+        state.reportLocalPokerCommandError({
           commandId: null,
           code: 'command_id_unavailable',
           message: 'A secure action identifier is unavailable.',
@@ -388,6 +479,83 @@ export function useRoomSession(
     [dependencies.commandIdFactory, store],
   );
 
+  const sendRoomCommand = useCallback(
+    (request: RoomCommandRequest): boolean => {
+      const state = store.getState();
+      const socket = socketRef.current;
+      if (
+        state.status !== 'connected' ||
+        state.snapshot === null ||
+        state.guestId === null ||
+        state.roomExit !== null ||
+        state.pendingPokerCommand !== null ||
+        state.pendingRoomCommand !== null ||
+        socket === null ||
+        socketGenerationRef.current !== generationRef.current
+      ) {
+        return false;
+      }
+
+      let commandId: string;
+      try {
+        const factory =
+          dependencies.commandIdFactory ??
+          (() => {
+            if (typeof crypto.randomUUID !== 'function') {
+              throw new Error('Secure command IDs are unavailable.');
+            }
+            return crypto.randomUUID();
+          });
+        commandId = factory();
+      } catch {
+        state.reportLocalRoomCommandError({
+          commandId: null,
+          code: 'command_id_unavailable',
+          message: 'A secure room-action identifier is unavailable.',
+        });
+        return false;
+      }
+
+      let command;
+      try {
+        command = buildRoomCommand({
+          snapshot: state.snapshot,
+          guestId: state.guestId,
+          request,
+          commandId,
+        });
+      } catch {
+        command = null;
+      }
+      if (command === null) {
+        return false;
+      }
+      const pending = {
+        commandId: command.command_id,
+        type: command.type,
+        acknowledged: false,
+        ...('target_guest_id' in command
+          ? { targetGuestId: command.target_guest_id }
+          : {}),
+        ...('seat_index' in command ? { seatIndex: command.seat_index } : {}),
+      };
+      if (!state.tryBeginRoomCommand(pending)) {
+        return false;
+      }
+      if (socket.sendRoomCommand(command)) {
+        return true;
+      }
+      store.getState().cancelPendingRoomCommand(command.command_id, {
+        commandId: command.command_id,
+        code: 'room_command_send_failed',
+        message:
+          'The room action could not be sent. Reconnect before trying again.',
+      });
+      return false;
+    },
+    [dependencies.commandIdFactory, store],
+  );
+
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -410,5 +578,6 @@ export function useRoomSession(
     isCreating,
     canReconnect,
     sendPokerAction,
+    sendRoomCommand,
   };
 }

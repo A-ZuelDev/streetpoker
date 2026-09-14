@@ -11,6 +11,7 @@ import type {
 } from './table.types';
 import type { ConnectionStatus } from '../../realtime/realtimeStore';
 import type { PendingPokerCommand } from '../../realtime/pokerActions';
+import type { PendingRoomCommand } from '../../realtime/roomCommands';
 import { deriveLiveActionModel } from './liveActionModel';
 
 const positions = [
@@ -74,6 +75,12 @@ function playerState(player: ActivePlayer | undefined): PlayerState {
 function memberView(
   member: RoomView['room']['members'][number],
   activePlayer: ActivePlayer | undefined,
+  options?: {
+    viewerGuestId: string;
+    hostGuestId: string;
+    showKick: boolean;
+    canKick: boolean;
+  },
 ): MemberView {
   const status =
     activePlayer?.status === 'all_in'
@@ -86,10 +93,21 @@ function memberView(
             ? 'Seated'
             : 'In room';
   return {
+    ...(options === undefined ? {} : { guestId: member.guest_id }),
     nickname: member.nickname,
     status,
     stack: member.stack,
-    isHost: member.is_host,
+    isHost:
+      options === undefined
+        ? member.is_host
+        : member.guest_id === options.hostGuestId,
+    ...(options === undefined
+      ? {}
+      : {
+          isViewer: member.guest_id === options.viewerGuestId,
+          showKick: options.showKick && member.guest_id !== options.hostGuestId,
+          canKick: options.canKick && member.guest_id !== options.hostGuestId,
+        }),
   };
 }
 
@@ -97,11 +115,29 @@ export function roomSnapshotToTableView(
   snapshot: RoomView,
   viewerGuestId: string,
   connectionStatus: ConnectionStatus = 'connected',
-  pendingCommand: PendingPokerCommand | null = null,
+  pendingPokerCommand: PendingPokerCommand | null = null,
+  pendingRoomCommand: PendingRoomCommand | null = null,
 ): TableView {
   const activeHand = snapshot.active_hand;
   const activeByGuest = new Map(
     activeHand?.players.map((player) => [player.guest_id, player]) ?? [],
+  );
+  const actor = snapshot.room.members.find(
+    (member) => member.guest_id === viewerGuestId,
+  );
+  const isHost = snapshot.room.host_guest_id === viewerGuestId;
+  const stateConsistent =
+    snapshot.room.status === 'hand_in_progress'
+      ? activeHand !== null
+      : activeHand === null;
+  const fresh = connectionStatus === 'connected' && stateConsistent;
+  const commandsPending =
+    pendingPokerCommand !== null || pendingRoomCommand !== null;
+  const actorHasRequest = snapshot.room.seat_requests.some(
+    (request) => request.guest_id === viewerGuestId,
+  );
+  const requestedSeatIndexes = new Set(
+    snapshot.room.seat_requests.map((request) => request.seat_index),
   );
   const seats = [...snapshot.room.seats]
     .sort((left, right) => left.seat_index - right.seat_index)
@@ -115,7 +151,30 @@ export function roomSnapshotToTableView(
         seat.nickname === null ||
         seat.stack === null
       ) {
-        return { kind: 'empty', seatIndex: seat.seat_index, position };
+        const requested = requestedSeatIndexes.has(seat.seat_index);
+        const canRequest =
+          fresh &&
+          !commandsPending &&
+          actor?.status === 'in_room' &&
+          !actorHasRequest &&
+          !requested &&
+          snapshot.room.status !== 'closed' &&
+          !(
+            snapshot.room.status === 'hand_in_progress' &&
+            !snapshot.room.settings.seating_approval_required
+          );
+        return {
+          kind: 'empty',
+          seatIndex: seat.seat_index,
+          position,
+          requested,
+          canRequest,
+          requestLabel: requested
+            ? `Seat ${seat.seat_index + 1} requested`
+            : snapshot.room.settings.seating_approval_required
+              ? `Request seat ${seat.seat_index + 1}`
+              : `Take seat ${seat.seat_index + 1}`,
+        };
       }
 
       const player = activeByGuest.get(seat.guest_id);
@@ -162,7 +221,7 @@ export function roomSnapshotToTableView(
     roomCode: snapshot.room.room_code,
     smallBlind: snapshot.room.settings.small_blind,
     bigBlind: snapshot.room.settings.big_blind,
-    isHost: snapshot.room.host_guest_id === viewerGuestId,
+    isHost,
     street: activeHand === null ? 'Open table' : phaseLabel(activeHand.phase),
     pot: activeHand?.pot_chips ?? 0,
     board: activeHand?.board.map(cardView) ?? [],
@@ -174,18 +233,74 @@ export function roomSnapshotToTableView(
       viewerHasSeat,
       currentActorNickname,
       connectionStatus,
-      pendingCommand,
+      pendingCommand: pendingPokerCommand,
+      roomCommandPending: pendingRoomCommand !== null,
       hasCompletedHand: snapshot.last_hand !== null,
     }),
     roomPanel: {
       members: snapshot.room.members.map((member) =>
-        memberView(member, activeByGuest.get(member.guest_id)),
+        memberView(member, activeByGuest.get(member.guest_id), {
+          viewerGuestId,
+          hostGuestId: snapshot.room.host_guest_id,
+          showKick: isHost,
+          canKick:
+            fresh &&
+            !commandsPending &&
+            isHost &&
+            (snapshot.room.status === 'open' || member.status === 'in_room'),
+        }),
       ),
-      seatRequests: snapshot.room.seat_requests.map((request) => ({
-        nickname: request.nickname,
-        seatIndex: request.seat_index,
-      })),
-      canStartHand: false,
+      seatRequests: snapshot.room.seat_requests
+        .filter((request) => isHost || request.guest_id === viewerGuestId)
+        .map((request) => ({
+          guestId: request.guest_id,
+          nickname: request.nickname,
+          seatIndex: request.seat_index,
+          isViewer: request.guest_id === viewerGuestId,
+          canApprove:
+            fresh &&
+            !commandsPending &&
+            isHost &&
+            snapshot.room.status === 'open',
+          canReject: fresh && !commandsPending && isHost,
+        })),
+      canStartHand:
+        fresh &&
+        !commandsPending &&
+        isHost &&
+        snapshot.room.status === 'open' &&
+        activeHand === null,
+      isHost,
+      canStand:
+        fresh &&
+        !commandsPending &&
+        actor?.status === 'seated' &&
+        snapshot.room.status === 'open',
+      canLeave:
+        fresh &&
+        !commandsPending &&
+        !isHost &&
+        actor !== undefined &&
+        (snapshot.room.status === 'open' || actor.status === 'in_room'),
+      canCloseRoom:
+        fresh &&
+        !commandsPending &&
+        isHost &&
+        snapshot.room.status === 'open' &&
+        activeHand === null,
+      commandsPending,
+      controlsDisabled: !fresh || commandsPending,
+      handInProgress: snapshot.room.status === 'hand_in_progress',
+      settings: {
+        roomName: snapshot.room.settings.room_name,
+        smallBlind: snapshot.room.settings.small_blind,
+        bigBlind: snapshot.room.settings.big_blind,
+        defaultStartingStack: snapshot.room.settings.default_starting_stack,
+        seatingApprovalRequired:
+          snapshot.room.settings.seating_approval_required,
+        maxSeats: snapshot.room.settings.max_seats,
+        passwordProtected: snapshot.room.settings.password_protected,
+      },
     },
     chat: null,
   };

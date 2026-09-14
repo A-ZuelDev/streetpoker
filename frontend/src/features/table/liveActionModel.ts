@@ -20,6 +20,7 @@ interface LiveActionModelOptions {
   readonly currentActorNickname: string | null;
   readonly connectionStatus: ConnectionStatus;
   readonly pendingCommand: PendingPokerCommand | null;
+  readonly roomCommandPending?: boolean;
   readonly hasCompletedHand: boolean;
 }
 
@@ -96,6 +97,7 @@ export function deriveLiveActionModel(
     currentActorNickname,
     connectionStatus,
     pendingCommand,
+    roomCommandPending = false,
     hasCompletedHand,
   } = options;
 
@@ -145,7 +147,7 @@ export function deriveLiveActionModel(
   }
 
   const kinds = new Set(activeHand.legal_actions.kinds);
-  const enabled = pendingCommand === null;
+  const enabled = pendingCommand === null && !roomCommandPending;
   const fold = kinds.has('fold')
     ? actionButton(activeHand, 'fold', 'Fold', enabled)
     : null;

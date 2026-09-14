@@ -42,6 +42,9 @@ export interface EmptySeatView {
   kind: 'empty';
   seatIndex: number;
   position: SeatPosition;
+  requestLabel?: string;
+  requested?: boolean;
+  canRequest?: boolean;
 }
 
 export type SeatView = OccupiedSeatView | EmptySeatView;
@@ -105,15 +108,33 @@ export interface LiveActionsView {
 }
 
 export interface MemberView {
+  guestId?: string;
   nickname: string;
   status: string;
   stack: number | null;
   isHost: boolean;
+  isViewer?: boolean;
+  showKick?: boolean;
+  canKick?: boolean;
 }
 
 export interface SeatRequestView {
+  guestId?: string;
   nickname: string;
   seatIndex: number;
+  isViewer?: boolean;
+  canApprove?: boolean;
+  canReject?: boolean;
+}
+
+export interface RoomSettingsView {
+  roomName: string;
+  smallBlind: number;
+  bigBlind: number;
+  defaultStartingStack: number;
+  seatingApprovalRequired: boolean;
+  maxSeats: number;
+  passwordProtected: boolean;
 }
 
 export interface ChatMessageView {
@@ -127,6 +148,14 @@ export interface RoomPanelView {
   members: readonly MemberView[];
   seatRequests: readonly SeatRequestView[];
   canStartHand: boolean;
+  isHost?: boolean;
+  canStand?: boolean;
+  canLeave?: boolean;
+  canCloseRoom?: boolean;
+  commandsPending?: boolean;
+  controlsDisabled?: boolean;
+  handInProgress?: boolean;
+  settings?: RoomSettingsView;
 }
 
 export interface TableView {

@@ -2,6 +2,11 @@ import { useState, type FormEvent, type ReactNode } from 'react';
 
 import { formatChips } from '../table/formatChips';
 import type { ChatMessageView, RoomPanelView } from '../table/table.types';
+import type {
+  RoomCommandRequest,
+  RoomSettingsPatch,
+} from '../../realtime/roomCommands';
+import { RoomSettingsEditor } from './RoomSettingsEditor';
 
 interface RoomPanelProps {
   panel: RoomPanelView;
@@ -9,6 +14,8 @@ interface RoomPanelProps {
   mode: 'demo' | 'live';
   isOpen: boolean;
   onToggle: () => void;
+  roomCode?: string;
+  onRoomCommand?: (request: RoomCommandRequest) => boolean;
 }
 
 interface CollapsibleRoomSectionProps {
@@ -68,12 +75,28 @@ export function RoomPanel({
   mode,
   isOpen,
   onToggle,
+  roomCode,
+  onRoomCommand,
 }: RoomPanelProps) {
   const requestCount = panel.seatRequests.length;
   const [draft, setDraft] = useState('');
   const [messages, setMessages] = useState<readonly ChatMessageView[]>(
     chat ?? [],
   );
+  const [confirmation, setConfirmation] = useState<
+    | { type: 'leave' | 'close_room' }
+    | { type: 'kick'; guestId: string; nickname: string }
+    | null
+  >(null);
+
+  const send = (request: RoomCommandRequest) => {
+    if (onRoomCommand?.(request)) {
+      setConfirmation(null);
+    }
+  };
+
+  const saveSettings = (patch: RoomSettingsPatch) =>
+    onRoomCommand?.({ type: 'update_settings', patch }) ?? false;
 
   const submitDemoMessage = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -114,12 +137,15 @@ export function RoomPanel({
         <div className="room-panel__body">
           <CollapsibleRoomSection
             id="members"
-            title="Members"
+            title={mode === 'live' ? 'Players / seats' : 'Members'}
             meta={String(panel.members.length)}
           >
             <ul className="member-list" aria-label="Room members">
               {panel.members.map((member) => (
-                <li key={member.nickname} className="member-row">
+                <li
+                  key={member.guestId ?? member.nickname}
+                  className="member-row"
+                >
                   <span className="member-row__avatar" aria-hidden="true">
                     {member.nickname.slice(0, 1)}
                   </span>
@@ -133,12 +159,56 @@ export function RoomPanel({
                   <span className="member-row__stack">
                     {member.stack === null ? '-' : formatChips(member.stack)}
                   </span>
+                  {mode === 'live' && member.showKick ? (
+                    confirmation?.type === 'kick' &&
+                    confirmation.guestId === member.guestId ? (
+                      <span className="room-panel__confirm">
+                        <button
+                          className="room-panel__danger"
+                          type="button"
+                          disabled={!member.canKick}
+                          onClick={() =>
+                            send({
+                              type: 'kick',
+                              targetGuestId: confirmation.guestId,
+                            })
+                          }
+                        >
+                          Confirm kick {member.nickname}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmation(null)}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        className="member-row__kick"
+                        type="button"
+                        disabled={!member.canKick}
+                        onClick={() =>
+                          member.guestId === undefined
+                            ? undefined
+                            : setConfirmation({
+                                type: 'kick',
+                                guestId: member.guestId,
+                                nickname: member.nickname,
+                              })
+                        }
+                      >
+                        Kick {member.nickname}
+                      </button>
+                    )
+                  ) : null}
                 </li>
               ))}
             </ul>
           </CollapsibleRoomSection>
 
           <CollapsibleRoomSection
+            key={requestCount === 0 ? 'no-seat-requests' : 'has-seat-requests'}
             id="seat-requests"
             title="Seat requests"
             meta={String(requestCount)}
@@ -149,7 +219,12 @@ export function RoomPanel({
             ) : (
               <ul className="request-list">
                 {panel.seatRequests.map((request) => (
-                  <li key={`${request.nickname}-${request.seatIndex}`}>
+                  <li
+                    key={
+                      request.guestId ??
+                      `${request.nickname}-${request.seatIndex}`
+                    }
+                  >
                     <div>
                       <strong>{request.nickname}</strong>
                       <span>Seat {request.seatIndex + 1}</span>
@@ -167,6 +242,42 @@ export function RoomPanel({
                           Reject
                         </button>
                       </div>
+                    ) : panel.isHost ? (
+                      <div className="request-actions">
+                        <button
+                          type="button"
+                          disabled={!request.canApprove}
+                          onClick={() =>
+                            request.guestId === undefined
+                              ? undefined
+                              : send({
+                                  type: 'approve_seat',
+                                  targetGuestId: request.guestId,
+                                })
+                          }
+                        >
+                          Approve
+                        </button>
+                        <button
+                          className="request-actions__reject"
+                          type="button"
+                          disabled={!request.canReject}
+                          onClick={() =>
+                            request.guestId === undefined
+                              ? undefined
+                              : send({
+                                  type: 'reject_seat',
+                                  targetGuestId: request.guestId,
+                                })
+                          }
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    ) : request.isViewer ? (
+                      <span className="room-panel__waiting">
+                        Waiting for host
+                      </span>
                     ) : null}
                   </li>
                 ))}
@@ -208,6 +319,105 @@ export function RoomPanel({
                   Send
                 </button>
               </form>
+            </CollapsibleRoomSection>
+          ) : null}
+
+          {mode === 'live' && panel.isHost && panel.settings !== undefined ? (
+            <CollapsibleRoomSection
+              id="room-settings"
+              title="Room settings"
+              defaultOpen={false}
+            >
+              <RoomSettingsEditor
+                key={JSON.stringify(panel.settings)}
+                settings={panel.settings}
+                roomCode={roomCode ?? ''}
+                handInProgress={panel.handInProgress ?? false}
+                disabled={panel.controlsDisabled ?? true}
+                onSave={saveSettings}
+              />
+            </CollapsibleRoomSection>
+          ) : null}
+
+          {mode === 'live' ? (
+            <CollapsibleRoomSection
+              id={panel.isHost ? 'host-controls' : 'player-controls'}
+              title={panel.isHost ? 'Host controls' : 'Player controls'}
+              defaultOpen
+            >
+              <div className="host-controls-grid">
+                {panel.canStand ||
+                panel.members.some((member) => member.isViewer) ? (
+                  <button
+                    type="button"
+                    disabled={!panel.canStand}
+                    onClick={() => send({ type: 'stand' })}
+                  >
+                    Stand
+                  </button>
+                ) : null}
+                {panel.isHost ? (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!panel.canStartHand}
+                      onClick={() => send({ type: 'start_hand' })}
+                    >
+                      Start hand
+                    </button>
+                    {confirmation?.type === 'close_room' ? (
+                      <span className="room-panel__confirm">
+                        <button
+                          className="room-panel__danger"
+                          type="button"
+                          disabled={!panel.canCloseRoom}
+                          onClick={() => send({ type: 'close_room' })}
+                        >
+                          Confirm close room
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmation(null)}
+                        >
+                          Cancel
+                        </button>
+                      </span>
+                    ) : (
+                      <button
+                        className="room-panel__danger"
+                        type="button"
+                        disabled={!panel.canCloseRoom}
+                        onClick={() => setConfirmation({ type: 'close_room' })}
+                      >
+                        Close room
+                      </button>
+                    )}
+                  </>
+                ) : confirmation?.type === 'leave' ? (
+                  <span className="room-panel__confirm">
+                    <button
+                      className="room-panel__danger"
+                      type="button"
+                      disabled={!panel.canLeave}
+                      onClick={() => send({ type: 'leave' })}
+                    >
+                      Confirm leave room
+                    </button>
+                    <button type="button" onClick={() => setConfirmation(null)}>
+                      Cancel
+                    </button>
+                  </span>
+                ) : (
+                  <button
+                    className="room-panel__danger"
+                    type="button"
+                    disabled={!panel.canLeave}
+                    onClick={() => setConfirmation({ type: 'leave' })}
+                  >
+                    Leave room
+                  </button>
+                )}
+              </div>
             </CollapsibleRoomSection>
           ) : null}
 

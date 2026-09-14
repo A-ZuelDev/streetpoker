@@ -24,14 +24,17 @@ export function LiveRoomSession() {
           state.snapshot,
           state.guestId,
           state.status,
-          state.pendingCommand,
+          state.pendingPokerCommand,
+          state.pendingRoomCommand,
         )}
         connectionStatus={state.status}
         connectionError={state.lastConnectionError?.message ?? null}
         persistenceWarning={session.persistenceWarning}
         onReconnect={session.reconnect}
-        commandError={state.lastCommandError?.message ?? null}
+        commandError={state.lastPokerCommandError?.message ?? null}
+        roomCommandError={state.lastRoomCommandError?.message ?? null}
         onPokerAction={session.sendPokerAction}
+        onRoomCommand={session.sendRoomCommand}
       />
     );
   }
@@ -57,6 +60,7 @@ export function LiveRoomSession() {
       onCreate={session.createRoom}
       onJoin={session.joinRoom}
       onReconnect={session.reconnect}
+      roomExit={state.roomExit}
     />
   );
 }

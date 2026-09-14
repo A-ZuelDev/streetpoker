@@ -7,11 +7,18 @@ import {
 } from './messages';
 import { protocolSessionError, SessionError } from './sessionError';
 import { pokerCommandSchema, type PokerCommand } from './pokerActions';
+import { roomCommandSchema, type RoomCommand } from './roomCommands';
+
+export interface RoomSocketClose {
+  readonly code: number;
+  readonly reason: string;
+  readonly wasClean: boolean;
+}
 
 export interface RoomSocketEvents {
   onMessage(message: ServerMessage): void;
   onFailure(error: SessionError): void;
-  onClose(): void;
+  onClose(close: RoomSocketClose): void;
 }
 
 export type WebSocketFactory = (url: string) => WebSocket;
@@ -78,6 +85,22 @@ export class RoomSocket {
     }
   }
 
+  sendRoomCommand(command: RoomCommand): boolean {
+    if (this.closed || this.socket.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    const parsed = roomCommandSchema.safeParse(command);
+    if (!parsed.success) {
+      return false;
+    }
+    try {
+      this.socket.send(JSON.stringify(parsed.data));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private readonly handleOpen = () => {
     if (this.closed || this.connectFrame === null) {
       return;
@@ -124,14 +147,18 @@ export class RoomSocket {
     }
   };
 
-  private readonly handleClose = () => {
+  private readonly handleClose = (event: CloseEvent) => {
     if (this.closed) {
       return;
     }
     this.closed = true;
     this.connectFrame = null;
     this.removeListeners();
-    this.events.onClose();
+    this.events.onClose({
+      code: event.code,
+      reason: event.reason,
+      wasClean: event.wasClean,
+    });
   };
 
   private failProtocol(): void {

@@ -3,6 +3,7 @@ import { createStore, type StoreApi } from 'zustand/vanilla';
 import type { RoomView } from './messages';
 import type { SessionError } from './sessionError';
 import type { PendingPokerCommand } from './pokerActions';
+import type { PendingRoomCommand } from './roomCommands';
 
 export type ConnectionStatus =
   'idle' | 'connecting' | 'syncing' | 'connected' | 'disconnected';
@@ -13,22 +14,36 @@ export interface CommandErrorState {
   readonly message: string;
 }
 
+export interface RoomExitState {
+  readonly kind: 'left' | 'kicked' | 'closed';
+  readonly roomCode: string;
+  readonly roomName: string | null;
+}
+
 export interface RealtimeState {
   readonly status: ConnectionStatus;
   readonly guestId: string | null;
   readonly roomCode: string | null;
   readonly snapshot: RoomView | null;
   readonly lastConnectionError: SessionError | null;
-  readonly lastCommandError: CommandErrorState | null;
-  readonly pendingCommand: PendingPokerCommand | null;
+  readonly lastPokerCommandError: CommandErrorState | null;
+  readonly lastRoomCommandError: CommandErrorState | null;
+  readonly pendingPokerCommand: PendingPokerCommand | null;
+  readonly pendingRoomCommand: PendingRoomCommand | null;
+  readonly roomExit: RoomExitState | null;
   beginConnection(roomCode: string): void;
   receiveConnected(guestId: string, roomCode: string): void;
   replaceSnapshot(snapshot: RoomView): void;
   receiveCommandAck(commandId: string): void;
-  receiveCommandError(error: CommandErrorState): void;
+  receivePokerCommandError(error: CommandErrorState): void;
+  receiveRoomCommandError(error: CommandErrorState): void;
   tryBeginPokerCommand(command: PendingPokerCommand): boolean;
+  tryBeginRoomCommand(command: PendingRoomCommand): boolean;
   cancelPendingPokerCommand(commandId: string, error?: CommandErrorState): void;
-  reportLocalCommandError(error: CommandErrorState): void;
+  cancelPendingRoomCommand(commandId: string, error?: CommandErrorState): void;
+  reportLocalPokerCommandError(error: CommandErrorState): void;
+  reportLocalRoomCommandError(error: CommandErrorState): void;
+  endRoomSession(exit: RoomExitState): void;
   receiveConnectionError(error: SessionError): void;
   markDisconnected(): void;
   resetSession(): void;
@@ -40,8 +55,11 @@ const initialData = {
   roomCode: null,
   snapshot: null,
   lastConnectionError: null,
-  lastCommandError: null,
-  pendingCommand: null,
+  lastPokerCommandError: null,
+  lastRoomCommandError: null,
+  pendingPokerCommand: null,
+  pendingRoomCommand: null,
+  roomExit: null,
 };
 
 export type RealtimeStore = StoreApi<RealtimeState>;
@@ -57,8 +75,11 @@ export function createRealtimeStore(): RealtimeStore {
         guestId: sameRoom ? get().guestId : null,
         snapshot: sameRoom ? get().snapshot : null,
         lastConnectionError: null,
-        lastCommandError: sameRoom ? get().lastCommandError : null,
-        pendingCommand: null,
+        lastPokerCommandError: sameRoom ? get().lastPokerCommandError : null,
+        lastRoomCommandError: sameRoom ? get().lastRoomCommandError : null,
+        pendingPokerCommand: null,
+        pendingRoomCommand: null,
+        roomExit: null,
       });
     },
     receiveConnected(guestId, roomCode) {
@@ -70,58 +91,109 @@ export function createRealtimeStore(): RealtimeStore {
       });
     },
     replaceSnapshot(snapshot) {
-      const pending = get().pendingCommand;
+      const pokerPending = get().pendingPokerCommand;
       const hand = snapshot.active_hand;
-      const stillPending =
-        pending !== null &&
+      const pokerStillPending =
+        pokerPending !== null &&
         hand !== null &&
-        hand.hand_number === pending.handNumber &&
-        hand.action_sequence === pending.expectedActionSequence &&
-        hand.current_actor === pending.actorGuestId;
+        hand.hand_number === pokerPending.handNumber &&
+        hand.action_sequence === pokerPending.expectedActionSequence &&
+        hand.current_actor === pokerPending.actorGuestId;
+      const roomPending = get().pendingRoomCommand;
       set({
         status: 'connected',
         snapshot,
-        pendingCommand: stillPending ? pending : null,
+        pendingPokerCommand: pokerStillPending ? pokerPending : null,
+        pendingRoomCommand:
+          roomPending?.acknowledged === true ? null : roomPending,
       });
     },
-    receiveCommandAck() {
-      // An acknowledgement never alters poker state or resolves pending UI.
+    receiveCommandAck(commandId) {
+      const pending = get().pendingRoomCommand;
+      if (pending?.commandId !== commandId) {
+        // Poker acknowledgements never alter poker state or pending UI.
+        return;
+      }
+      set({ pendingRoomCommand: { ...pending, acknowledged: true } });
     },
-    receiveCommandError(error) {
-      const pending = get().pendingCommand;
+    receivePokerCommandError(error) {
+      const pending = get().pendingPokerCommand;
       if (pending === null || error.commandId !== pending.commandId) {
         return;
       }
-      set({ pendingCommand: null, lastCommandError: error });
+      set({ pendingPokerCommand: null, lastPokerCommandError: error });
+    },
+    receiveRoomCommandError(error) {
+      const pending = get().pendingRoomCommand;
+      if (pending === null || error.commandId !== pending.commandId) {
+        return;
+      }
+      set({ pendingRoomCommand: null, lastRoomCommandError: error });
     },
     tryBeginPokerCommand(command) {
-      if (get().pendingCommand !== null) {
+      if (
+        get().pendingPokerCommand !== null ||
+        get().pendingRoomCommand !== null
+      ) {
         return false;
       }
-      set({ pendingCommand: command, lastCommandError: null });
+      set({ pendingPokerCommand: command, lastPokerCommandError: null });
+      return true;
+    },
+    tryBeginRoomCommand(command) {
+      if (
+        get().pendingPokerCommand !== null ||
+        get().pendingRoomCommand !== null
+      ) {
+        return false;
+      }
+      set({ pendingRoomCommand: command, lastRoomCommandError: null });
       return true;
     },
     cancelPendingPokerCommand(commandId, error) {
-      if (get().pendingCommand?.commandId !== commandId) {
+      if (get().pendingPokerCommand?.commandId !== commandId) {
         return;
       }
       set({
-        pendingCommand: null,
-        ...(error === undefined ? {} : { lastCommandError: error }),
+        pendingPokerCommand: null,
+        ...(error === undefined ? {} : { lastPokerCommandError: error }),
       });
     },
-    reportLocalCommandError(error) {
-      set({ lastCommandError: error });
+    cancelPendingRoomCommand(commandId, error) {
+      if (get().pendingRoomCommand?.commandId !== commandId) {
+        return;
+      }
+      set({
+        pendingRoomCommand: null,
+        ...(error === undefined ? {} : { lastRoomCommandError: error }),
+      });
+    },
+    reportLocalPokerCommandError(error) {
+      set({ lastPokerCommandError: error });
+    },
+    reportLocalRoomCommandError(error) {
+      set({ lastRoomCommandError: error });
+    },
+    endRoomSession(exit) {
+      set({
+        ...initialData,
+        roomExit: exit,
+      });
     },
     receiveConnectionError(error) {
       set({
         status: 'disconnected',
         lastConnectionError: error,
-        pendingCommand: null,
+        pendingPokerCommand: null,
+        pendingRoomCommand: null,
       });
     },
     markDisconnected() {
-      set({ status: 'disconnected', pendingCommand: null });
+      set({
+        status: 'disconnected',
+        pendingPokerCommand: null,
+        pendingRoomCommand: null,
+      });
     },
     resetSession() {
       set(initialData);

@@ -185,6 +185,22 @@ describe('TableScreen', () => {
     ).toBeInTheDocument();
   });
 
+  it('keeps room-command feedback visible when the room panel is closed', () => {
+    render(
+      <TableScreen
+        table={roomSnapshotToTableView(activeRoomSnapshot(), 'guest_alice')}
+        connectionStatus="connected"
+        roomCommandError="That room action is unavailable."
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Collapse room panel' }),
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'That room action is unavailable.',
+    );
+  });
+
   it('renders accessible demo chat and appends a local-only message', () => {
     render(<TableScreen table={activeDemoTable} backendStatus="online" />);
 
