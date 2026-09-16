@@ -91,10 +91,47 @@
   text-overflow: ellipsis;
 }
 
-.room-summary b {
+.room-summary code {
   color: #d9e0dc;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-weight: 740;
   letter-spacing: 0.08em;
+  user-select: all;
+}
+
+.room-summary__code {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.room-summary__copy {
+  min-height: 1.8rem;
+  padding: 0.2rem 0.42rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  color: #c3cec8;
+  background: #141a17;
+  font-size: 0.56rem;
+  font-weight: 720;
+}
+
+.room-summary__copy-status {
+  position: absolute;
+  top: calc(100% + 0.3rem);
+  right: 0;
+  z-index: 22;
+  width: max-content;
+  max-width: 15rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  color: var(--text-muted);
+  background: #141a17;
+  box-shadow: 0 0.4rem 1rem rgb(0 0 0 / 28%);
+  font-size: 0.55rem;
+  white-space: normal;
 }
 
 .room-summary__divider {
@@ -173,13 +210,13 @@
   top: 0.72rem;
   right: 0.65rem;
   min-width: 2.25rem;
-  min-height: 1.8rem;
+  min-height: 2rem;
   padding: 0.25rem 0.45rem;
   border: 1px solid rgb(255 255 255 / 11%);
   border-radius: 0.4rem;
   color: #b8c5be;
   background: #161d19;
-  font-size: 0.55rem;
+  font-size: 0.62rem;
   font-weight: 760;
 }
 
@@ -234,7 +271,7 @@
 .room-panel__section-heading h2 {
   margin: 0;
   color: #dce2de;
-  font-size: 0.66rem;
+  font-size: 0.72rem;
   font-weight: 830;
   letter-spacing: 0.1em;
   text-transform: uppercase;
@@ -255,7 +292,7 @@
   border-radius: 999px;
   color: var(--text-muted);
   background: var(--surface-soft);
-  font-size: 0.55rem;
+  font-size: 0.62rem;
   font-weight: 800;
 }
 
@@ -317,13 +354,13 @@
 .host-controls-grid button,
 .room-panel__confirm button,
 .room-settings button {
-  min-height: 1.8rem;
+  min-height: 2.05rem;
   padding: 0.3rem 0.45rem;
   border: 1px solid rgb(255 255 255 / 12%);
   border-radius: 0.35rem;
   color: #c4d0c9;
   background: rgb(255 255 255 / 5%);
-  font-size: 0.54rem;
+  font-size: 0.62rem;
   font-weight: 740;
 }
 
@@ -356,7 +393,7 @@
 .room-settings__error {
   margin: 0.5rem 0 0;
   color: #efb8bb;
-  font-size: 0.58rem;
+  font-size: 0.64rem;
   line-height: 1.4;
 }
 
@@ -371,14 +408,14 @@
   flex-direction: column;
   gap: 0.22rem;
   color: #aebbb4;
-  font-size: 0.55rem;
+  font-size: 0.62rem;
 }
 
 .room-settings input,
 .room-settings select {
   width: 100%;
   min-width: 0;
-  height: 1.9rem;
+  height: 2.15rem;
   padding: 0.3rem 0.42rem;
   border: 1px solid var(--line);
   border-radius: 0.35rem;
@@ -452,7 +489,7 @@
   align-items: center;
   gap: 0.35rem;
   overflow: hidden;
-  font-size: 0.67rem;
+  font-size: 0.72rem;
   font-weight: 720;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -473,14 +510,14 @@
   overflow: hidden;
   margin-top: 0.12rem;
   color: var(--room-text-muted);
-  font-size: 0.53rem;
+  font-size: 0.6rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .member-row__stack {
   color: #b8c4bd;
-  font-size: 0.57rem;
+  font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
 }
 
@@ -514,7 +551,7 @@
 
 .request-list span {
   color: var(--text-muted);
-  font-size: 0.55rem;
+  font-size: 0.62rem;
 }
 
 .request-actions {
@@ -526,12 +563,12 @@
 
 .request-actions button,
 .room-panel__host-controls button {
-  min-height: 1.8rem;
+  min-height: 2.05rem;
   border: 1px solid rgb(50 199 133 / 24%);
   border-radius: 0.35rem;
   color: #bfead4;
   background: rgb(50 199 133 / 8%);
-  font-size: 0.56rem;
+  font-size: 0.63rem;
   font-weight: 740;
 }
 

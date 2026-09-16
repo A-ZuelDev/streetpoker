@@ -122,6 +122,9 @@ export function RoomPanel({
     <aside
       className={`room-panel room-panel--${isOpen ? 'open' : 'closed'}`}
       aria-label="Room tools"
+      aria-busy={
+        panel.pendingCommand !== undefined && panel.pendingCommand !== null
+      }
     >
       <button
         className="room-panel__toggle"
@@ -231,13 +234,14 @@ export function RoomPanel({
                     </div>
                     {mode === 'demo' ? (
                       <div className="request-actions">
-                        <button type="button" title="Demo only">
+                        <button type="button" disabled title="Preview only">
                           Approve
                         </button>
                         <button
                           className="request-actions__reject"
                           type="button"
-                          title="Demo only"
+                          disabled
+                          title="Preview only"
                         >
                           Reject
                         </button>
@@ -288,8 +292,8 @@ export function RoomPanel({
           {mode === 'demo' ? (
             <CollapsibleRoomSection
               id="chat"
-              title="Chat"
-              meta="Demo"
+              title="Chat preview"
+              meta="Non-live"
               className="room-panel__chat"
             >
               <ol className="chat-list" aria-label="Recent chat messages">
@@ -322,23 +326,6 @@ export function RoomPanel({
             </CollapsibleRoomSection>
           ) : null}
 
-          {mode === 'live' && panel.isHost && panel.settings !== undefined ? (
-            <CollapsibleRoomSection
-              id="room-settings"
-              title="Room settings"
-              defaultOpen={false}
-            >
-              <RoomSettingsEditor
-                key={JSON.stringify(panel.settings)}
-                settings={panel.settings}
-                roomCode={roomCode ?? ''}
-                handInProgress={panel.handInProgress ?? false}
-                disabled={panel.controlsDisabled ?? true}
-                onSave={saveSettings}
-              />
-            </CollapsibleRoomSection>
-          ) : null}
-
           {mode === 'live' ? (
             <CollapsibleRoomSection
               id={panel.isHost ? 'host-controls' : 'player-controls'}
@@ -346,8 +333,7 @@ export function RoomPanel({
               defaultOpen
             >
               <div className="host-controls-grid">
-                {panel.canStand ||
-                panel.members.some((member) => member.isViewer) ? (
+                {panel.showStand ? (
                   <button
                     type="button"
                     disabled={!panel.canStand}
@@ -363,7 +349,7 @@ export function RoomPanel({
                       disabled={!panel.canStartHand}
                       onClick={() => send({ type: 'start_hand' })}
                     >
-                      Start hand
+                      {panel.startHandLabel ?? 'Start hand'}
                     </button>
                     {confirmation?.type === 'close_room' ? (
                       <span className="room-panel__confirm">
@@ -418,6 +404,24 @@ export function RoomPanel({
                   </button>
                 )}
               </div>
+            </CollapsibleRoomSection>
+          ) : null}
+
+          {mode === 'live' && panel.isHost && panel.settings !== undefined ? (
+            <CollapsibleRoomSection
+              id="room-settings"
+              title="Room settings"
+              defaultOpen={false}
+            >
+              <RoomSettingsEditor
+                key={JSON.stringify(panel.settings)}
+                settings={panel.settings}
+                roomCode={roomCode ?? ''}
+                handInProgress={panel.handInProgress ?? false}
+                disabled={panel.controlsDisabled ?? true}
+                savingSettings={panel.pendingCommand?.kind === 'settings'}
+                onSave={saveSettings}
+              />
             </CollapsibleRoomSection>
           ) : null}
 

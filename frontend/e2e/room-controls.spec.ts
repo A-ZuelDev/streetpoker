@@ -109,6 +109,24 @@ test('guest requests one specific seat without optimistic seating', async ({
   await expect(
     page.getByRole('button', { name: 'Request seat 1' }),
   ).toBeVisible();
+  await expect(page.getByText('Requesting seat 1…')).toBeVisible();
+
+  harness.socket.send(
+    JSON.stringify({
+      type: 'command_ack',
+      command_id: commands(harness)[0]!.command_id,
+    }),
+  );
+  await expect(
+    page.getByText('Waiting for the table to update…'),
+  ).toBeVisible();
+  const requested = structuredClone(snapshot);
+  requested.room.seat_requests = [
+    { guest_id: 'guest_alice', nickname: 'Alice', seat_index: 0 },
+  ];
+  harness.socket.send(JSON.stringify({ type: 'state', snapshot: requested }));
+  await expect(page.getByText('Waiting for host')).toBeVisible();
+  await expect(page.getByText('Waiting for the table to update…')).toBeHidden();
 });
 
 test('approval-disabled take seat uses request_seat', async ({ page }) => {
@@ -167,7 +185,7 @@ test('leave ACK returns to entry with a local terminal notice', async ({
       command_id: commands(harness)[0]!.command_id,
     }),
   );
-  await expect(page.getByText(/You left the room\./)).toBeVisible();
+  await expect(page.getByText('You left Friday Night.')).toBeVisible();
   await expect(
     page.getByRole('heading', { name: 'Join a room' }),
   ).toBeVisible();
@@ -190,7 +208,7 @@ test('host kicks a target while the target classifies its exact close', async ({
   const target = await openRoom(targetPage, openRoomSnapshot(), 'guest_alice');
   await target.socket.close({ code: 1008, reason: 'removed from room' });
   await expect(
-    targetPage.getByText(/You were removed from the room\./),
+    targetPage.getByText('You were removed from Friday Night.'),
   ).toBeVisible();
   await targetPage.close();
 });
@@ -201,7 +219,10 @@ test('host starts with exact authoritative next_hand_number', async ({
   const snapshot = openRoomSnapshot();
   snapshot.next_hand_number = 41;
   const harness = await openRoom(page, snapshot, 'guest_host');
-  await page.getByRole('button', { name: 'Start hand' }).click();
+  await page
+    .getByRole('region', { name: 'Table actions' })
+    .getByRole('button', { name: 'Start hand' })
+    .click();
   await expect.poll(() => commands(harness).length).toBe(1);
   expect(commands(harness)[0]).toEqual({
     type: 'start_hand',
@@ -215,12 +236,18 @@ test('next hand uses the new authoritative number after settlement', async ({
 }) => {
   const first = openRoomSnapshot();
   const harness = await openRoom(page, first, 'guest_host');
-  await page.getByRole('button', { name: 'Start hand' }).click();
+  await page
+    .getByRole('region', { name: 'Table actions' })
+    .getByRole('button', { name: 'Start hand' })
+    .click();
   await acknowledgeAndState(harness, activeRoomSnapshot());
   harness.socket.send(
     JSON.stringify({ type: 'state', snapshot: completedRoomSnapshot() }),
   );
-  await page.getByRole('button', { name: 'Start hand' }).click();
+  await page
+    .getByRole('region', { name: 'Table actions' })
+    .getByRole('button', { name: 'Start next hand' })
+    .click();
   await expect.poll(() => commands(harness).length).toBe(2);
   expect(commands(harness)[1]).toMatchObject({
     type: 'start_hand',
@@ -287,7 +314,7 @@ test('authoritative closed state exits before socket close', async ({
   const closed = openRoomSnapshot();
   closed.room.status = 'closed';
   harness.socket.send(JSON.stringify({ type: 'state', snapshot: closed }));
-  await expect(page.getByText(/This room was closed\./)).toBeVisible();
+  await expect(page.getByText('Friday Night was closed.')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Reconnect' })).toBeHidden();
 });
 
@@ -338,6 +365,21 @@ test('matching room error uses fixed local feedback and unlocks controls', async
   await expect(
     page.getByRole('button', { name: 'Request seat 1' }),
   ).toBeEnabled();
+
+  await page.getByRole('button', { name: 'Request seat 1' }).click();
+  await expect.poll(() => commands(harness).length).toBe(2);
+  await expect(
+    page.getByText('That seat is no longer available.'),
+  ).toBeHidden();
+  const requested = unseatedGuestSnapshot();
+  requested.room.seat_requests = [
+    { guest_id: 'guest_alice', nickname: 'Alice', seat_index: 0 },
+  ];
+  await acknowledgeAndState(harness, requested);
+  await expect(page.getByText('Waiting for host')).toBeVisible();
+  await expect(
+    page.getByText('That seat is no longer available.'),
+  ).toBeHidden();
 });
 
 test('room state broadcast updates seats and request presentation', async ({

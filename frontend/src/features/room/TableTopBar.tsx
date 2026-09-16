@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react';
+
 import { formatChips } from '../table/formatChips';
 import type { TableDemoView } from '../table/table.types';
 import type { ConnectionStatus } from '../../realtime/realtimeStore';
@@ -31,18 +33,46 @@ export function TableTopBar({
   connectionStatus,
   onReconnect,
 }: TableTopBarProps) {
+  const [copyStatus, setCopyStatus] = useState<'copied' | 'unavailable' | null>(
+    null,
+  );
   const statusClass = table.mode === 'demo' ? backendStatus : connectionStatus;
   const statusLabel =
     table.mode === 'demo'
       ? backendLabels[backendStatus]
       : connectionLabels[connectionStatus];
+
+  useEffect(() => {
+    if (copyStatus === null) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setCopyStatus(null), 2_000);
+    return () => window.clearTimeout(timeout);
+  }, [copyStatus]);
+
+  const copyRoomCode = async () => {
+    try {
+      if (navigator.clipboard === undefined) {
+        throw new Error('Clipboard unavailable');
+      }
+      await navigator.clipboard.writeText(table.roomCode);
+      setCopyStatus('copied');
+    } catch {
+      setCopyStatus('unavailable');
+    }
+  };
+
   return (
     <header className="table-topbar">
       <div className="table-topbar__brand-group">
         <h1 className="table-topbar__title">
-          <a className="table-topbar__brand" href="/">
-            StreetPoker
-          </a>
+          {table.mode === 'live' ? (
+            <span className="table-topbar__brand">StreetPoker</span>
+          ) : (
+            <a className="table-topbar__brand" href="/">
+              StreetPoker
+            </a>
+          )}
         </h1>
         <span className="demo-badge">
           {table.mode === 'demo' ? 'Demo table' : 'Live room'}
@@ -52,8 +82,22 @@ export function TableTopBar({
       <div className="room-summary" aria-label="Room summary">
         <strong>{table.roomName}</strong>
         <span className="room-summary__divider" aria-hidden="true" />
-        <span>
-          Code <b>{table.roomCode}</b>
+        <span className="room-summary__code">
+          Code <code>{table.roomCode}</code>
+          <button
+            className="room-summary__copy"
+            type="button"
+            onClick={() => void copyRoomCode()}
+          >
+            Copy code
+          </button>
+          <span className="room-summary__copy-status" role="status">
+            {copyStatus === 'copied'
+              ? 'Copied'
+              : copyStatus === 'unavailable'
+                ? 'Copy unavailable'
+                : null}
+          </span>
         </span>
         <span className="room-summary__divider" aria-hidden="true" />
         <span>

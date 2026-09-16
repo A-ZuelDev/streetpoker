@@ -102,9 +102,38 @@ export interface LiveActionsView {
   statusDetail: string;
   protocolWarning: boolean;
   pending: boolean;
+  pendingSource: 'poker' | 'room' | null;
   fold: LiveActionButtonView<'fold'> | null;
   middle: LiveActionButtonView<'check' | 'call'> | null;
   wager: LiveWagerView | null;
+}
+
+export type RoomPendingKind =
+  | 'request-seat'
+  | 'approve-seat'
+  | 'reject-seat'
+  | 'stand'
+  | 'leave'
+  | 'kick'
+  | 'start-hand'
+  | 'settings'
+  | 'close-room';
+
+export interface RoomPendingView {
+  kind: RoomPendingKind;
+  phase: 'submitting' | 'waiting';
+  label: string;
+}
+
+export interface HandCompletionAwardView {
+  displayName: string;
+  seatNumber: number;
+  amount: number;
+}
+
+export interface HandCompletionView {
+  handNumber: number;
+  awards: readonly HandCompletionAwardView[];
 }
 
 export interface MemberView {
@@ -152,7 +181,9 @@ export interface RoomPanelView {
   canStand?: boolean;
   canLeave?: boolean;
   canCloseRoom?: boolean;
-  commandsPending?: boolean;
+  showStand?: boolean;
+  startHandLabel?: 'Start hand' | 'Start next hand';
+  pendingCommand?: RoomPendingView | null;
   controlsDisabled?: boolean;
   handInProgress?: boolean;
   settings?: RoomSettingsView;
@@ -173,6 +204,7 @@ export interface TableView {
   seats: readonly SeatView[];
   legalActions: LegalActionsView | null;
   liveActions: LiveActionsView | null;
+  handCompletion: HandCompletionView | null;
   roomPanel: RoomPanelView;
   chat: readonly ChatMessageView[] | null;
 }

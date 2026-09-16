@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { formatChips } from './formatChips';
 import type { PokerActionRequest } from '../../realtime/pokerActions';
 import type {
+  HandCompletionView,
   LegalActionsView,
   LiveActionsView,
   LiveWagerView,
@@ -13,11 +14,13 @@ interface ActionBarProps {
   hero: OccupiedSeatView | null;
   legalActions: LegalActionsView | null;
   canStartHand: boolean;
+  isHost: boolean;
   mode: 'demo' | 'live';
-  isHandActive: boolean;
+  handCompletion: HandCompletionView | null;
   liveActions: LiveActionsView | null;
   commandError: string | null;
   onPokerAction?: (request: PokerActionRequest) => boolean;
+  onStartHand?: () => boolean;
 }
 
 function clampAmount(value: number, minimum: number, maximum: number): number {
@@ -44,9 +47,20 @@ function LiveActionBar({
   liveActions,
   commandError,
   onPokerAction,
+  canStartHand,
+  isHost,
+  handCompletion,
+  onStartHand,
 }: Pick<
   ActionBarProps,
-  'hero' | 'liveActions' | 'commandError' | 'onPokerAction'
+  | 'hero'
+  | 'liveActions'
+  | 'commandError'
+  | 'onPokerAction'
+  | 'canStartHand'
+  | 'isHost'
+  | 'handCompletion'
+  | 'onStartHand'
 >) {
   if (liveActions === null) {
     return null;
@@ -55,12 +69,16 @@ function LiveActionBar({
     liveActions.fold !== null ||
     liveActions.middle !== null ||
     liveActions.wager !== null;
+  const showStartHand = isHost && liveActions.status === 'open';
+  const startHandLabel =
+    handCompletion === null ? 'Start hand' : 'Start next hand';
 
   if (!hasControls) {
     return (
       <section
-        className="action-bar action-bar--waiting action-bar--readonly"
+        className={`action-bar action-bar--waiting action-bar--${liveActions.status} ${showStartHand ? '' : 'action-bar--readonly'}`.trim()}
         aria-label="Table actions"
+        aria-busy={liveActions.pending}
       >
         <div className="action-hero">
           <span className="action-hero__eyebrow">
@@ -77,6 +95,16 @@ function LiveActionBar({
           <strong>{liveActions.statusLabel}</strong>
           <span>{liveActions.statusDetail}</span>
         </div>
+        {showStartHand ? (
+          <button
+            className="action-button action-button--primary action-button--start"
+            type="button"
+            disabled={!canStartHand || onStartHand === undefined}
+            onClick={onStartHand}
+          >
+            {startHandLabel}
+          </button>
+        ) : null}
         {liveActions.protocolWarning ? (
           <p className="action-feedback" role="alert">
             Action controls are unavailable until a fresh valid update arrives.
@@ -95,7 +123,7 @@ function LiveActionBar({
 
   return (
     <section
-      className="action-bar"
+      className={`action-bar action-bar--${liveActions.status}`}
       aria-label="Table actions"
       aria-busy={liveActions.pending}
     >
@@ -107,7 +135,12 @@ function LiveActionBar({
         </span>
       </div>
 
-      <p className="action-summary" aria-live="polite">
+      <p
+        className="action-summary"
+        {...(liveActions.pendingSource === 'room'
+          ? {}
+          : { 'aria-live': 'polite' as const })}
+      >
         <span>Action</span>
         <strong>{liveActions.statusDetail}</strong>
       </p>
@@ -324,7 +357,7 @@ function LiveWagerControl({
   );
 }
 
-function DemoActionBar({ hero, legalActions, canStartHand }: ActionBarProps) {
+function DemoActionBar({ hero, legalActions }: ActionBarProps) {
   if (hero === null) {
     throw new Error('The table demo requires a hero seat.');
   }
@@ -383,13 +416,13 @@ function DemoActionBar({ hero, legalActions, canStartHand }: ActionBarProps) {
         </div>
         <div className="action-waiting-copy">
           <strong>Table ready</strong>
-          <span>Four players seated · Host can begin</span>
+          <span>Controls preview · Live host can begin</span>
         </div>
         <button
           className="action-button action-button--primary action-button--start"
           type="button"
-          disabled={!canStartHand}
-          title="Demo only"
+          disabled
+          title="Preview only"
         >
           Start hand
         </button>
@@ -420,16 +453,16 @@ function DemoActionBar({ hero, legalActions, canStartHand }: ActionBarProps) {
         <button
           className="action-button action-button--fold"
           type="button"
-          disabled={!legalActions.canFold}
-          title="Demo only"
+          disabled
+          title="Preview only"
         >
           Fold
         </button>
         <button
           className="action-button action-button--neutral"
           type="button"
-          disabled={!legalActions.canCheck && legalActions.call === null}
-          title="Demo only"
+          disabled
+          title="Preview only"
         >
           {passiveAction}
         </button>
@@ -491,8 +524,8 @@ function DemoActionBar({ hero, legalActions, canStartHand }: ActionBarProps) {
       <button
         className="action-button action-button--primary action-button--wager"
         type="button"
-        disabled={wager === null}
-        title="Demo only"
+        disabled
+        title="Preview only"
         aria-label={`${wager?.kind === 'bet' ? 'Bet' : 'Raise'} ${formatChips(amount)}`}
         onClick={commitAmountDraft}
       >
@@ -510,6 +543,12 @@ export function ActionBar(props: ActionBarProps) {
         hero={props.hero}
         liveActions={props.liveActions}
         commandError={props.commandError}
+        canStartHand={props.canStartHand}
+        isHost={props.isHost}
+        handCompletion={props.handCompletion}
+        {...(props.onStartHand === undefined
+          ? {}
+          : { onStartHand: props.onStartHand })}
         {...(props.onPokerAction === undefined
           ? {}
           : { onPokerAction: props.onPokerAction })}

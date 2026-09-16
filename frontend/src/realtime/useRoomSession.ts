@@ -454,6 +454,11 @@ export function useRoomSession(
         command = null;
       }
       if (command === null) {
+        state.reportLocalPokerCommandError({
+          commandId: null,
+          code: 'stale_action_context',
+          message: 'The table changed before that action could be sent.',
+        });
         return false;
       }
       const pending = {
@@ -472,7 +477,8 @@ export function useRoomSession(
       store.getState().cancelPendingPokerCommand(command.command_id, {
         commandId: command.command_id,
         code: 'action_send_failed',
-        message: 'The action could not be sent. Reconnect before trying again.',
+        message:
+          'The action could not be sent. Try again when the table is ready.',
       });
       return false;
     },
@@ -528,6 +534,11 @@ export function useRoomSession(
         command = null;
       }
       if (command === null) {
+        state.reportLocalRoomCommandError({
+          commandId: null,
+          code: 'stale_room_context',
+          message: 'The room changed before that action could be sent.',
+        });
         return false;
       }
       const pending = {
@@ -549,7 +560,7 @@ export function useRoomSession(
         commandId: command.command_id,
         code: 'room_command_send_failed',
         message:
-          'The room action could not be sent. Reconnect before trying again.',
+          'The room action could not be sent. Try again when the table is ready.',
       });
       return false;
     },

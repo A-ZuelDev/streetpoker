@@ -295,6 +295,49 @@ describe('LiveRoomSession', () => {
     expect(document.body.textContent).not.toContain('private server detail');
   });
 
+  it('clears a wrong-password error when a corrected join succeeds', async () => {
+    renderSession();
+    let form = formFor('Join a room');
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Room code' }), {
+      target: { value: 'abcdefgh' },
+    });
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Nickname' }), {
+      target: { value: 'Mara' },
+    });
+    fireEvent.change(within(form).getByLabelText('Password if required'), {
+      target: { value: 'wrong-secret' },
+    });
+    fireEvent.submit(form);
+    const rejected = FakeBrowserSocket.instances[0]!;
+    rejected.serverOpen();
+    rejected.serverMessage({
+      type: 'connection_error',
+      code: 'wrong_room_password',
+      message: 'private rejected detail',
+    });
+    expect(
+      await screen.findByText('The room password was not accepted.'),
+    ).toBeInTheDocument();
+
+    form = formFor('Join a room');
+    const password = form.elements.namedItem('join-password');
+    if (!(password instanceof HTMLInputElement)) {
+      throw new Error('Expected the join password input.');
+    }
+    fireEvent.change(password, { target: { value: 'correct-secret' } });
+    fireEvent.submit(form);
+    const accepted = FakeBrowserSocket.instances[1]!;
+    connectAndState(accepted);
+
+    expect(await screen.findByText('Table live')).toBeInTheDocument();
+    expect(
+      screen.queryByText('The room password was not accepted.'),
+    ).toBeNull();
+    expect(document.body.textContent).not.toContain('wrong-secret');
+    expect(document.body.textContent).not.toContain('correct-secret');
+    expect(document.body.textContent).not.toContain('private rejected detail');
+  });
+
   it('sends one live action, retains pending through ack, and maps errors safely', async () => {
     renderSession();
     const form = formFor('Join a room');
