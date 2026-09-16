@@ -56,19 +56,25 @@ export function RoomEntry({
   const renderFieldError = (
     form: 'create' | 'join',
     field: SessionErrorField,
+    id: string,
   ) => {
     const message = fieldError(form, field);
-    return message === null ? null : <small role="alert">{message}</small>;
+    return message === null ? null : (
+      <small id={id} role="alert">
+        {message}
+      </small>
+    );
   };
   const generalError =
     error !== null && error.field === null ? error.message : localError;
+  const exitedRoomName = roomExit?.roomName ?? 'the room';
   const roomExitMessage =
     roomExit?.kind === 'left'
-      ? 'You left the room.'
+      ? `You left ${exitedRoomName}.`
       : roomExit?.kind === 'kicked'
-        ? 'You were removed from the room.'
+        ? `You were removed from ${exitedRoomName}.`
         : roomExit?.kind === 'closed'
-          ? 'This room was closed.'
+          ? `${roomExit?.roomName ?? 'This room'} was closed.`
           : null;
 
   const submitCreate = (event: FormEvent<HTMLFormElement>) => {
@@ -149,9 +155,6 @@ export function RoomEntry({
       {roomExitMessage !== null ? (
         <p className="session-entry__status" role="status">
           {roomExitMessage}
-          {roomExit === null || roomExit.roomName === null
-            ? null
-            : ` ${roomExit.roomName}`}
         </p>
       ) : null}
       {statusText !== null ? (
@@ -175,7 +178,11 @@ export function RoomEntry({
       ) : null}
 
       <div className="session-entry__forms">
-        <form className="session-card" onSubmit={submitCreate}>
+        <form
+          className="session-card"
+          aria-busy={busy && activeForm === 'create'}
+          onSubmit={submitCreate}
+        >
           <div>
             <span className="session-card__step">New table</span>
             <h2>Create a room</h2>
@@ -189,9 +196,14 @@ export function RoomEntry({
               autoComplete="nickname"
               required
               aria-invalid={fieldError('create', 'nickname') !== null}
+              aria-describedby={
+                fieldError('create', 'nickname') === null
+                  ? undefined
+                  : 'create-nickname-error'
+              }
               onChange={(event) => setCreateNickname(event.currentTarget.value)}
             />
-            {renderFieldError('create', 'nickname')}
+            {renderFieldError('create', 'nickname', 'create-nickname-error')}
           </label>
           <label>
             Room name
@@ -201,9 +213,14 @@ export function RoomEntry({
               maxLength={512}
               required
               aria-invalid={fieldError('create', 'roomName') !== null}
+              aria-describedby={
+                fieldError('create', 'roomName') === null
+                  ? undefined
+                  : 'create-room-name-error'
+              }
               onChange={(event) => setRoomName(event.currentTarget.value)}
             />
-            {renderFieldError('create', 'roomName')}
+            {renderFieldError('create', 'roomName', 'create-room-name-error')}
           </label>
           <div className="session-card__number-grid">
             <label>
@@ -214,6 +231,12 @@ export function RoomEntry({
                 min="1"
                 step="1"
                 value={smallBlind}
+                aria-invalid={fieldError('create', 'settings') !== null}
+                aria-describedby={
+                  fieldError('create', 'settings') === null
+                    ? undefined
+                    : 'create-settings-error'
+                }
                 onChange={(event) => setSmallBlind(event.currentTarget.value)}
               />
             </label>
@@ -225,6 +248,12 @@ export function RoomEntry({
                 min="1"
                 step="1"
                 value={bigBlind}
+                aria-invalid={fieldError('create', 'settings') !== null}
+                aria-describedby={
+                  fieldError('create', 'settings') === null
+                    ? undefined
+                    : 'create-settings-error'
+                }
                 onChange={(event) => setBigBlind(event.currentTarget.value)}
               />
             </label>
@@ -238,9 +267,14 @@ export function RoomEntry({
               step="1"
               value={startingStack}
               aria-invalid={fieldError('create', 'settings') !== null}
+              aria-describedby={
+                fieldError('create', 'settings') === null
+                  ? undefined
+                  : 'create-settings-error'
+              }
               onChange={(event) => setStartingStack(event.currentTarget.value)}
             />
-            {renderFieldError('create', 'settings')}
+            {renderFieldError('create', 'settings', 'create-settings-error')}
           </label>
           <label>
             Optional password
@@ -251,9 +285,14 @@ export function RoomEntry({
               maxLength={128}
               autoComplete="new-password"
               aria-invalid={fieldError('create', 'password') !== null}
+              aria-describedby={
+                fieldError('create', 'password') === null
+                  ? undefined
+                  : 'create-password-error'
+              }
               onChange={(event) => setCreatePassword(event.currentTarget.value)}
             />
-            {renderFieldError('create', 'password')}
+            {renderFieldError('create', 'password', 'create-password-error')}
           </label>
           <label className="session-card__check">
             <input
@@ -271,7 +310,11 @@ export function RoomEntry({
           </button>
         </form>
 
-        <form className="session-card" onSubmit={submitJoin}>
+        <form
+          className="session-card"
+          aria-busy={busy && activeForm === 'join'}
+          onSubmit={submitJoin}
+        >
           <div>
             <span className="session-card__step">Have a code?</span>
             <h2>Join a room</h2>
@@ -284,11 +327,17 @@ export function RoomEntry({
               maxLength={10}
               autoCapitalize="characters"
               autoComplete="off"
+              spellCheck={false}
               required
               aria-invalid={fieldError('join', 'roomCode') !== null}
+              aria-describedby={
+                fieldError('join', 'roomCode') === null
+                  ? undefined
+                  : 'join-room-code-error'
+              }
               onChange={(event) => setJoinRoomCode(event.currentTarget.value)}
             />
-            {renderFieldError('join', 'roomCode')}
+            {renderFieldError('join', 'roomCode', 'join-room-code-error')}
           </label>
           <label>
             Nickname
@@ -299,9 +348,14 @@ export function RoomEntry({
               autoComplete="nickname"
               required
               aria-invalid={fieldError('join', 'nickname') !== null}
+              aria-describedby={
+                fieldError('join', 'nickname') === null
+                  ? undefined
+                  : 'join-nickname-error'
+              }
               onChange={(event) => setJoinNickname(event.currentTarget.value)}
             />
-            {renderFieldError('join', 'nickname')}
+            {renderFieldError('join', 'nickname', 'join-nickname-error')}
           </label>
           <label>
             Password if required
@@ -312,9 +366,14 @@ export function RoomEntry({
               maxLength={128}
               autoComplete="current-password"
               aria-invalid={fieldError('join', 'password') !== null}
+              aria-describedby={
+                fieldError('join', 'password') === null
+                  ? undefined
+                  : 'join-password-error'
+              }
               onChange={(event) => setJoinPassword(event.currentTarget.value)}
             />
-            {renderFieldError('join', 'password')}
+            {renderFieldError('join', 'password', 'join-password-error')}
           </label>
           <button type="submit" disabled={busy}>
             {busy && activeForm === 'join' ? 'Connecting…' : 'Join room'}

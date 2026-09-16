@@ -112,6 +112,13 @@
   border-color: var(--danger);
 }
 
+.session-card input[name='join-room-code'] {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
 .session-card__number-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

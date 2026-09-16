@@ -24,6 +24,13 @@ interface TableScreenProps {
   onRoomCommand?: (request: RoomCommandRequest) => boolean;
 }
 
+function roomPanelStartsOpen(): boolean {
+  return (
+    typeof window.matchMedia !== 'function' ||
+    !window.matchMedia('(max-width: 1120px)').matches
+  );
+}
+
 export function TableScreen({
   table,
   backendStatus = 'checking',
@@ -36,7 +43,7 @@ export function TableScreen({
   onPokerAction,
   onRoomCommand,
 }: TableScreenProps) {
-  const [isRoomPanelOpen, setIsRoomPanelOpen] = useState(true);
+  const [isRoomPanelOpen, setIsRoomPanelOpen] = useState(roomPanelStartsOpen);
   const hero = table.seats.find(
     (seat): seat is OccupiedSeatView => seat.kind === 'occupied' && seat.isHero,
   );
@@ -47,6 +54,20 @@ export function TableScreen({
 
   const liveIsFresh = table.mode === 'live' && connectionStatus === 'connected';
   const liveIsStale = table.mode === 'live' && !liveIsFresh;
+  const connectionNotice = liveIsStale
+    ? (connectionError ??
+      (connectionStatus === 'syncing'
+        ? 'Connected. Waiting for a fresh table update.'
+        : connectionStatus === 'connecting'
+          ? 'Connecting. The displayed table may be stale.'
+          : 'Disconnected. The displayed table is stale.'))
+    : null;
+  const roomPending = table.roomPanel.pendingCommand ?? null;
+  const hasNotices =
+    connectionNotice !== null ||
+    persistenceWarning ||
+    roomPending !== null ||
+    roomCommandError !== null;
 
   return (
     <div
@@ -59,28 +80,37 @@ export function TableScreen({
         connectionStatus={connectionStatus}
         {...(onReconnect === undefined ? {} : { onReconnect })}
       />
-      {liveIsStale || connectionError !== null || persistenceWarning ? (
-        <div className="session-banner" role="status">
-          <span>
-            {connectionError ??
-              (connectionStatus === 'syncing'
-                ? 'Connected. Waiting for a fresh table update.'
-                : connectionStatus === 'connecting'
-                  ? 'Connecting. The displayed table may be stale.'
-                  : 'Disconnected. The displayed table is stale.')}
-          </span>
+      {hasNotices ? (
+        <div className="table-notices" aria-label="Table notices">
+          {connectionNotice === null ? null : (
+            <div className="session-banner session-banner--connection">
+              {connectionNotice}
+            </div>
+          )}
           {persistenceWarning ? (
-            <small>
+            <div
+              className="session-banner session-banner--warning"
+              role="status"
+            >
               Your browser session will not persist after this page closes.
-            </small>
+            </div>
           ) : null}
+          {roomPending === null ? null : (
+            <div
+              className="session-banner session-banner--pending"
+              role="status"
+              aria-atomic="true"
+            >
+              {roomPending.label}
+            </div>
+          )}
+          {roomCommandError === null ? null : (
+            <div className="session-banner session-banner--error" role="alert">
+              {roomCommandError}
+            </div>
+          )}
         </div>
       ) : null}
-      {roomCommandError === null ? null : (
-        <div className="session-banner" role="alert">
-          <span>{roomCommandError}</span>
-        </div>
-      )}
       <div className="table-screen__body">
         <main className="table-screen__game">
           <PokerTable
@@ -96,11 +126,17 @@ export function TableScreen({
             hero={hero ?? null}
             legalActions={table.legalActions}
             canStartHand={table.roomPanel.canStartHand}
+            isHost={table.isHost}
             mode={table.mode}
-            isHandActive={table.isHandActive}
+            handCompletion={table.handCompletion}
             liveActions={table.liveActions}
             commandError={commandError}
             {...(onPokerAction === undefined ? {} : { onPokerAction })}
+            {...(onRoomCommand === undefined
+              ? {}
+              : {
+                  onStartHand: () => onRoomCommand({ type: 'start_hand' }),
+                })}
           />
         </main>
         <RoomPanel

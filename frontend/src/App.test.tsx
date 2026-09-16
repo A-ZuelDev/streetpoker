@@ -20,6 +20,8 @@ afterEach(() => {
 describe('App', () => {
   it('shows the active demo table and backend health independently', async () => {
     window.history.replaceState({}, '', '/?demo=active');
+    const webSocket = vi.fn();
+    vi.stubGlobal('WebSocket', webSocket);
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -38,6 +40,8 @@ describe('App', () => {
       screen.getByRole('region', { name: 'Six-max poker table' }),
     ).toBeInTheDocument();
     expect(await screen.findByText('Backend online')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Fold' })).toBeDisabled();
+    expect(webSocket).not.toHaveBeenCalled();
   });
 
   it('reports backend health failure without implying the table is live', async () => {
@@ -58,9 +62,8 @@ describe('App', () => {
     renderApp();
 
     expect(screen.getByText('Table ready')).toBeInTheDocument();
-    expect(
-      screen.getByRole('button', { name: 'Start hand' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Start hand' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeDisabled();
   });
 
   it('uses live room entry for the normal route and unknown demo values', () => {

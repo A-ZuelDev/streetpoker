@@ -21,6 +21,8 @@ interface LiveActionModelOptions {
   readonly connectionStatus: ConnectionStatus;
   readonly pendingCommand: PendingPokerCommand | null;
   readonly roomCommandPending?: boolean;
+  readonly roomPendingLabel?: string | null;
+  readonly viewerIsHost?: boolean;
   readonly hasCompletedHand: boolean;
 }
 
@@ -36,6 +38,7 @@ function waitingModel(
     statusDetail,
     protocolWarning,
     pending: false,
+    pendingSource: null,
     fold: null,
     middle: null,
     wager: null,
@@ -98,6 +101,8 @@ export function deriveLiveActionModel(
     connectionStatus,
     pendingCommand,
     roomCommandPending = false,
+    roomPendingLabel = null,
+    viewerIsHost = false,
     hasCompletedHand,
   } = options;
 
@@ -115,15 +120,26 @@ export function deriveLiveActionModel(
       'Actions are unavailable',
     );
   }
-  if (!viewerHasSeat) {
+  if (!viewerHasSeat && !(viewerIsHost && activeHand === null)) {
     return waitingModel('watching', 'Watching the table', 'Waiting for a seat');
   }
   if (activeHand === null) {
-    return waitingModel(
+    const result = waitingModel(
       'open',
       hasCompletedHand ? 'Hand complete' : 'Table open',
-      'Waiting for the next hand',
+      roomCommandPending && roomPendingLabel !== null
+        ? roomPendingLabel
+        : hasCompletedHand
+          ? viewerIsHost
+            ? 'Ready for the next hand'
+            : 'Waiting for host to start the next hand'
+          : viewerIsHost
+            ? 'Start when the table is ready'
+            : 'Waiting for host to start the hand',
     );
+    return roomCommandPending
+      ? { ...result, pending: true, pendingSource: 'room' }
+      : result;
   }
   if (!legalActionFactsAreConsistent(activeHand)) {
     return waitingModel(
@@ -185,11 +201,15 @@ export function deriveLiveActionModel(
     status: 'your-turn',
     statusLabel: 'Your turn',
     statusDetail:
-      pendingCommand === null
-        ? 'Choose an action'
-        : `Submitting ${pendingCommand.type.replace('_to', '')}…`,
+      pendingCommand !== null
+        ? `Submitting ${pendingCommand.type.replace('_to', '')}…`
+        : roomCommandPending && roomPendingLabel !== null
+          ? roomPendingLabel
+          : 'Choose an action',
     protocolWarning: false,
-    pending: pendingCommand !== null,
+    pending: pendingCommand !== null || roomCommandPending,
+    pendingSource:
+      pendingCommand !== null ? 'poker' : roomCommandPending ? 'room' : null,
     fold,
     middle,
     wager,

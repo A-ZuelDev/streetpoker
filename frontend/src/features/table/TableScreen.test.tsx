@@ -1,7 +1,13 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
-import { activeRoomSnapshot } from '../../test/roomSnapshots';
+import { activeRoomSnapshot, openRoomSnapshot } from '../../test/roomSnapshots';
 import { activeDemoTable, openDemoTable } from './demoTable.fixture';
 import { roomSnapshotToTableView } from './roomSnapshotAdapter';
 import { TableScreen } from './TableScreen';
@@ -42,7 +48,7 @@ describe('TableScreen', () => {
 
     expect(container.querySelectorAll('[data-seat-index]')).toHaveLength(6);
     expect(screen.getByLabelText('Seat 1: Mara')).toBeInTheDocument();
-    expect(screen.getByText('You')).toBeInTheDocument();
+    expect(screen.getByText('You · Seat 1')).toBeInTheDocument();
     expect(
       screen.getByRole('img', { name: 'A of spades' }),
     ).toBeInTheDocument();
@@ -93,13 +99,13 @@ describe('TableScreen', () => {
     expect(screen.getAllByText('All in').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Sitting out').length).toBeGreaterThan(0);
 
-    expect(screen.getByRole('button', { name: 'Fold' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'Call 350' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Fold' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Call 350' })).toBeDisabled();
     expect(screen.getByLabelText('Bet or raise amount')).toHaveValue(2_400);
     expect(screen.getByLabelText('Bet or raise amount slider')).toHaveValue(
       '2400',
     );
-    expect(screen.getByRole('button', { name: 'Raise 2,400' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Raise 2,400' })).toBeDisabled();
     expect(
       screen.getByRole('heading', { name: 'Members' }),
     ).toBeInTheDocument();
@@ -136,13 +142,13 @@ describe('TableScreen', () => {
     expect(screen.queryByText('No pending requests')).toBeNull();
 
     fireEvent.click(
-      screen.getByRole('button', { name: 'Collapse Chat section' }),
+      screen.getByRole('button', { name: 'Collapse Chat preview section' }),
     );
-    const chat = screen.getByRole('region', { name: 'Chat' });
+    const chat = screen.getByRole('region', { name: 'Chat preview' });
     expect(within(chat).queryByText('nice hand')).toBeNull();
     expect(within(chat).queryByRole('textbox')).toBeNull();
     fireEvent.click(
-      screen.getByRole('button', { name: 'Expand Chat section' }),
+      screen.getByRole('button', { name: 'Expand Chat preview section' }),
     );
     expect(
       within(chat).getByRole('textbox', { name: 'Chat message' }),
@@ -201,10 +207,108 @@ describe('TableScreen', () => {
     );
   });
 
+  it('keeps connection truth separate from persistence warnings and stacks notices', () => {
+    const { container } = render(
+      <TableScreen
+        table={roomSnapshotToTableView(openRoomSnapshot(), 'guest_host')}
+        connectionStatus="connected"
+        connectionError="An old connection warning."
+        persistenceWarning
+        roomCommandError="That room action is unavailable."
+      />,
+    );
+
+    expect(screen.getByText('Table live')).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Disconnected\. The displayed table is stale/),
+    ).toBeNull();
+    expect(screen.queryByText('An old connection warning.')).toBeNull();
+    const notices = container.querySelector('.table-notices');
+    expect(notices).not.toBeNull();
+    expect(notices!.querySelectorAll('.session-banner')).toHaveLength(2);
+    expect(notices!.children[0]).toHaveTextContent(
+      'Your browser session will not persist',
+    );
+    expect(notices!.children[1]).toHaveTextContent(
+      'That room action is unavailable.',
+    );
+  });
+
+  it('copies only the visible room code and reports success', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(
+      navigator,
+      'clipboard',
+    );
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    try {
+      render(
+        <TableScreen
+          table={roomSnapshotToTableView(openRoomSnapshot(), 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Copy code' }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledWith('ABCDEFGH'));
+      expect(screen.getByText('Copied')).toBeInTheDocument();
+      expect(screen.getByText('ABCDEFGH')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'StreetPoker' })).toBeNull();
+    } finally {
+      if (originalClipboard === undefined) {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      } else {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      }
+    }
+  });
+
+  it('leaves the room code visible when clipboard copying fails', async () => {
+    const originalClipboard = Object.getOwnPropertyDescriptor(
+      navigator,
+      'clipboard',
+    );
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockRejectedValue(new Error('blocked')) },
+    });
+    try {
+      render(
+        <TableScreen
+          table={roomSnapshotToTableView(openRoomSnapshot(), 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'Copy code' }));
+      expect(await screen.findByText('Copy unavailable')).toBeInTheDocument();
+      expect(screen.getByText('ABCDEFGH')).toBeInTheDocument();
+    } finally {
+      if (originalClipboard === undefined) {
+        Reflect.deleteProperty(navigator, 'clipboard');
+      } else {
+        Object.defineProperty(navigator, 'clipboard', originalClipboard);
+      }
+    }
+  });
+
+  it('starts with the overlay room panel closed below its breakpoint', () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }));
+    try {
+      render(<TableScreen table={activeDemoTable} backendStatus="online" />);
+      expect(
+        screen.getByRole('button', { name: 'Expand room panel' }),
+      ).toHaveAttribute('aria-expanded', 'false');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('renders accessible demo chat and appends a local-only message', () => {
     render(<TableScreen table={activeDemoTable} backendStatus="online" />);
 
-    const chat = screen.getByRole('region', { name: 'Chat' });
+    const chat = screen.getByRole('region', { name: 'Chat preview' });
     expect(within(chat).getByText('nice hand')).toBeInTheDocument();
     expect(within(chat).getByText('one more orbit?')).toBeInTheDocument();
     expect(within(chat).getByText('gl')).toBeInTheDocument();
@@ -237,7 +341,7 @@ describe('TableScreen', () => {
     }
 
     expect(slider).toHaveValue('3200');
-    expect(screen.getByRole('button', { name: 'Raise 3,200' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Raise 3,200' })).toBeDisabled();
 
     fireEvent.change(amount, { target: { value: '' } });
     fireEvent.change(amount, { target: { value: '3' } });
@@ -268,10 +372,10 @@ describe('TableScreen', () => {
 
     fireEvent.change(amount, { target: { value: '' } });
     fireEvent.change(amount, { target: { value: '9000' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Raise 8,100' }));
+    fireEvent.blur(amount);
     expect(amount).toHaveValue(8_100);
     expect(slider).toHaveValue('8100');
-    expect(screen.getByRole('button', { name: 'Raise 8,100' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Raise 8,100' })).toBeDisabled();
   });
 
   it('rebases a local wager draft when authoritative actions change', () => {
@@ -288,7 +392,7 @@ describe('TableScreen', () => {
 
     expect(amount).toHaveValue(3_200);
     expect(slider).toHaveValue('3200');
-    expect(screen.getByRole('button', { name: 'Raise 3,200' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Raise 3,200' })).toBeDisabled();
 
     view.rerender(
       <TableScreen table={{ ...activeDemoTable }} backendStatus="online" />,
@@ -321,7 +425,7 @@ describe('TableScreen', () => {
     expect(screen.getByLabelText('Bet or raise amount slider')).toHaveValue(
       '4500',
     );
-    expect(screen.getByRole('button', { name: 'Raise 4,500' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Raise 4,500' })).toBeDisabled();
   });
 
   it('renders the open demo with empty seats, a request, and host start state', () => {
@@ -341,8 +445,74 @@ describe('TableScreen', () => {
     expect(screen.getByText('Seat 3')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Start hand' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Start hand' })).toBeDisabled();
     expect(screen.getByText('Backend offline')).toBeInTheDocument();
+  });
+
+  it('announces backend and live connection transitions from the top-bar status only', () => {
+    const view = render(
+      <TableScreen table={openDemoTable} backendStatus="checking" />,
+    );
+
+    expect(screen.getByText('Backend checking')).toHaveAttribute(
+      'role',
+      'status',
+    );
+    view.rerender(<TableScreen table={openDemoTable} backendStatus="online" />);
+    expect(screen.getByText('Backend online')).toHaveAttribute(
+      'role',
+      'status',
+    );
+    view.rerender(
+      <TableScreen table={openDemoTable} backendStatus="offline" />,
+    );
+    expect(screen.getByText('Backend offline')).toHaveAttribute(
+      'role',
+      'status',
+    );
+
+    const liveTable = {
+      ...openDemoTable,
+      mode: 'live' as const,
+      chat: null,
+      legalActions: null,
+      roomPanel: { ...openDemoTable.roomPanel, canStartHand: false },
+    };
+    view.rerender(
+      <TableScreen table={liveTable} connectionStatus="connecting" />,
+    );
+    expect(screen.getByText('Connecting', { exact: true })).toHaveAttribute(
+      'role',
+      'status',
+    );
+    expect(
+      screen.getByText('Connecting. The displayed table may be stale.'),
+    ).not.toHaveAttribute('role');
+
+    view.rerender(<TableScreen table={liveTable} connectionStatus="syncing" />);
+    expect(screen.getByText('Syncing table')).toHaveAttribute('role', 'status');
+    expect(
+      screen.getByText('Connected. Waiting for a fresh table update.'),
+    ).not.toHaveAttribute('role');
+
+    view.rerender(
+      <TableScreen table={liveTable} connectionStatus="connected" />,
+    );
+    expect(screen.getByText('Table live')).toHaveAttribute('role', 'status');
+    expect(
+      document.querySelector('.session-banner--connection'),
+    ).not.toBeInTheDocument();
+
+    view.rerender(
+      <TableScreen table={liveTable} connectionStatus="disconnected" />,
+    );
+    expect(screen.getByText(/Disconnected .* stale table/)).toHaveAttribute(
+      'role',
+      'status',
+    );
+    expect(
+      screen.getByText('Disconnected. The displayed table is stale.'),
+    ).not.toHaveAttribute('role');
   });
 
   it('keeps stale live state visible through connecting and syncing', () => {

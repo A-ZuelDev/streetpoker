@@ -1,7 +1,9 @@
 .table-screen {
   position: relative;
+  display: grid;
   height: 100vh;
   height: 100dvh;
+  grid-template-rows: auto auto minmax(0, 1fr);
   overflow: hidden;
   background:
     radial-gradient(circle at 48% 45%, rgb(24 77 57 / 18%), transparent 39%),
@@ -21,13 +23,20 @@
   filter: saturate(0.72);
 }
 
-.session-banner {
-  position: absolute;
+.table-notices {
   z-index: 8;
-  top: 4rem;
-  left: 50%;
   display: grid;
+  grid-row: 2;
+  gap: 0.35rem;
+  padding: 0.35rem 1rem 0;
+  pointer-events: none;
+}
+
+.session-banner {
+  display: grid;
+  width: fit-content;
   max-width: min(90vw, 42rem);
+  margin: 0 auto;
   padding: 0.55rem 0.9rem;
   color: var(--gold-soft);
   border: 1px solid rgb(221 183 104 / 36%);
@@ -36,7 +45,21 @@
   box-shadow: 0 0.8rem 2rem rgb(0 0 0 / 30%);
   font-size: 0.72rem;
   text-align: center;
-  transform: translateX(-50%);
+  pointer-events: auto;
+}
+
+.session-banner--warning {
+  color: #f2cf8c;
+}
+
+.session-banner--error {
+  color: #f0b7bb;
+  border-color: rgb(210 104 110 / 38%);
+}
+
+.session-banner--pending {
+  color: #c6e7d5;
+  border-color: rgb(75 210 145 / 30%);
 }
 
 .session-banner small {
@@ -52,13 +75,13 @@
   position: relative;
   z-index: 1;
   display: grid;
-  height: calc(100% - 3.5rem);
   min-height: 0;
+  grid-row: 3;
   transition: grid-template-columns 180ms ease;
 }
 
 .table-screen--panel-open .table-screen__body {
-  grid-template-columns: minmax(0, 1fr) clamp(13.75rem, 17vw, 16.75rem);
+  grid-template-columns: minmax(0, 1fr) clamp(15rem, 18vw, 18rem);
 }
 
 .table-screen--panel-closed .table-screen__body {
@@ -160,6 +183,62 @@
   font-weight: 750;
   letter-spacing: 0.16em;
   text-transform: uppercase;
+}
+
+.hand-completion {
+  display: grid;
+  min-width: min(22rem, 62vw);
+  gap: 0.45rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgb(221 183 104 / 30%);
+  border-radius: 0.75rem;
+  background: rgb(5 19 14 / 84%);
+  box-shadow: 0 0.8rem 1.8rem rgb(0 0 0 / 24%);
+  text-align: center;
+}
+
+.hand-completion h2,
+.hand-completion p {
+  margin: 0;
+}
+
+.hand-completion h2 {
+  color: var(--gold-soft);
+  font-size: clamp(0.9rem, 1.2vw, 1.15rem);
+}
+
+.hand-completion__awards {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.hand-completion__award {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0.45rem;
+  border-radius: 0.35rem;
+  background: rgb(255 255 255 / 4%);
+}
+
+.hand-completion__award span {
+  color: var(--text);
+  font-size: 0.75rem;
+}
+
+.hand-completion__award b {
+  color: #b9eed2;
+  font-size: 0.78rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.hand-completion > p {
+  color: var(--text-muted);
+  font-size: 0.68rem;
 }
 
 .board-cards {
@@ -409,7 +488,7 @@
   font-weight: 700;
 }
 
-.player-pod--empty:hover {
+.player-pod--empty:not(:disabled):hover {
   border-color: rgb(74 207 141 / 66%);
   color: #dff6e9;
   background: rgb(18 54 39 / 78%);
@@ -640,6 +719,16 @@
   box-shadow: 0 -0.8rem 2.4rem rgb(0 0 0 / 20%);
 }
 
+.action-bar--your-turn {
+  border-top-color: rgb(75 210 145 / 48%);
+  background:
+    linear-gradient(90deg, rgb(36 104 73 / 20%), transparent 38%),
+    rgb(11 15 13 / 96%);
+  box-shadow:
+    0 -0.15rem 0.9rem rgb(75 210 145 / 10%),
+    0 -0.8rem 2.4rem rgb(0 0 0 / 20%);
+}
+
 .action-bar--waiting {
   grid-template-columns: minmax(8.5rem, 11rem) 1fr minmax(8rem, 10rem);
 }
@@ -837,13 +926,11 @@
 }
 
 .action-feedback {
-  position: absolute;
-  right: 1rem;
-  bottom: 0.15rem;
-  max-width: min(30rem, 70%);
-  margin: 0;
+  grid-column: 1 / -1;
+  margin: -0.35rem 0 0;
   color: #f0b7bb;
   font-size: 0.62rem;
+  text-align: right;
 }
 
 .action-waiting-copy {

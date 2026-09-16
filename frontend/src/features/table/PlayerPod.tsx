@@ -67,8 +67,8 @@ export function PlayerPod({
                 ? `Request empty seat ${seat.seatIndex + 1}`
                 : seat.requestLabel
             }
-            disabled={!interactiveDemo && !seat.canRequest}
-            {...(interactiveDemo ? { title: 'Demo only' } : {})}
+            disabled={interactiveDemo || !seat.canRequest}
+            {...(interactiveDemo ? { title: 'Preview only' } : {})}
             onClick={() => onRequestSeat?.(seat.seatIndex)}
           >
             <span className="player-pod__empty-icon" aria-hidden="true">
@@ -111,24 +111,40 @@ export function PlayerPod({
       >
         <div className="player-pod__identity">
           <span className="player-pod__name">{seat.nickname}</span>
-          {seat.isHero ? <span className="player-pod__you">You</span> : null}
+          {seat.isHero ? (
+            <span className="player-pod__you">
+              You · Seat {seat.seatIndex + 1}
+            </span>
+          ) : null}
         </div>
         <span className="player-pod__stack">{formatChips(seat.stack)}</span>
         <span className="player-pod__status">{status}</span>
 
         <span className="player-pod__markers" aria-label="Seat markers">
           {seat.isDealer ? (
-            <span className="seat-marker seat-marker--dealer" title="Dealer">
+            <span
+              className="seat-marker seat-marker--dealer"
+              title="Dealer"
+              aria-label="Dealer button"
+            >
               D
             </span>
           ) : null}
           {seat.blind === 'small-blind' ? (
-            <span className="seat-marker" title="Small blind">
+            <span
+              className="seat-marker"
+              title="Small blind"
+              aria-label="Small blind"
+            >
               SB
             </span>
           ) : null}
           {seat.blind === 'big-blind' ? (
-            <span className="seat-marker" title="Big blind">
+            <span
+              className="seat-marker"
+              title="Big blind"
+              aria-label="Big blind"
+            >
               BB
             </span>
           ) : null}

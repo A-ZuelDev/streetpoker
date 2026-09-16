@@ -11,6 +11,7 @@ interface RoomSettingsEditorProps {
   roomCode: string;
   handInProgress: boolean;
   disabled: boolean;
+  savingSettings?: boolean;
   onSave(patch: RoomSettingsPatch): boolean;
 }
 
@@ -27,6 +28,7 @@ export function RoomSettingsEditor({
   roomCode,
   handInProgress,
   disabled,
+  savingSettings = false,
   onSave,
 }: RoomSettingsEditorProps) {
   const [roomName, setRoomName] = useState(settings.roomName);
@@ -136,6 +138,7 @@ export function RoomSettingsEditor({
     <form
       className="room-settings"
       aria-label="Room settings"
+      aria-busy={savingSettings}
       onSubmit={submit}
     >
       <label>
@@ -250,7 +253,7 @@ export function RoomSettingsEditor({
         </p>
       )}
       <button type="submit" disabled={disabled}>
-        {disabled ? 'Saving…' : 'Save settings'}
+        {savingSettings ? 'Saving…' : 'Save settings'}
       </button>
     </form>
   );

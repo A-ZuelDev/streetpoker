@@ -190,7 +190,7 @@ test('STATE ADVANCEMENT resolves pending and late ack causes no resend', async (
   expect(pokerFrames(harness)).toHaveLength(1);
 });
 
-test('MATCHING COMMAND ERROR clears pending with fixed safe feedback', async ({
+test('MATCHING COMMAND ERROR clears on legal retry and authoritative success', async ({
   page,
 }) => {
   const harness = await openActionRoom(page);
@@ -210,6 +210,19 @@ test('MATCHING COMMAND ERROR clears pending with fixed safe feedback', async ({
   await expect(page.locator('body')).not.toContainText('private server detail');
   await expect(page.getByRole('button', { name: 'Call 50' })).toBeEnabled();
   await expect(pot).toHaveText(before ?? '');
+
+  await page.getByRole('button', { name: 'Call 50' }).click();
+  await expect.poll(() => pokerFrames(harness).length).toBe(2);
+  await expect(page.getByText('Calling is not available now.')).toBeHidden();
+  await expect(pot).toHaveText(before ?? '');
+
+  const advanced = activeRoomSnapshot();
+  advanced.active_hand!.action_sequence = 3;
+  advanced.active_hand!.current_actor = 'guest_alice';
+  advanced.active_hand!.legal_actions.actor = 'guest_alice';
+  harness.socket.send(JSON.stringify({ type: 'state', snapshot: advanced }));
+  await expect(page.getByText('Waiting for Alice')).toBeVisible();
+  await expect(page.getByText('Calling is not available now.')).toBeHidden();
 });
 
 test('NON-ACTOR has no action controls and sends nothing', async ({ page }) => {

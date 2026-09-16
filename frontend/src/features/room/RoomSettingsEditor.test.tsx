@@ -205,4 +205,41 @@ describe('RoomSettingsEditor', () => {
       'positive whole numbers',
     );
   });
+
+  it('separates a disabled editor from actual settings-saving feedback', () => {
+    const rendered = render(
+      <RoomSettingsEditor
+        settings={settings}
+        roomCode="ABCDEFGH"
+        handInProgress={false}
+        disabled
+        savingSettings={false}
+        onSave={() => true}
+      />,
+    );
+    expect(
+      screen.getByRole('button', { name: 'Save settings' }),
+    ).toBeDisabled();
+    expect(screen.queryByText('Saving…')).toBeNull();
+    expect(rendered.container.querySelector('.room-settings')).toHaveAttribute(
+      'aria-busy',
+      'false',
+    );
+
+    rendered.rerender(
+      <RoomSettingsEditor
+        settings={settings}
+        roomCode="ABCDEFGH"
+        handInProgress={false}
+        disabled
+        savingSettings
+        onSave={() => true}
+      />,
+    );
+    expect(screen.getByRole('button', { name: 'Saving…' })).toBeDisabled();
+    expect(rendered.container.querySelector('.room-settings')).toHaveAttribute(
+      'aria-busy',
+      'true',
+    );
+  });
 });

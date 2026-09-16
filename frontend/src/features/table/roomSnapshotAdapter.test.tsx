@@ -31,7 +31,9 @@ describe('roomSnapshotToTableView', () => {
 
     render(<TableScreen table={table} connectionStatus="connected" />);
     expect(screen.getByText('Not seated')).toBeInTheDocument();
-    expect(screen.getByText('Watching the table')).toBeInTheDocument();
+    expect(
+      screen.getByText('Start when the table is ready'),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /fold/i })).toBeNull();
     expect(document.body.textContent).not.toContain('internal-room-id');
     expect(document.body.textContent).not.toContain('guest_host');
@@ -115,6 +117,130 @@ describe('roomSnapshotToTableView', () => {
       street: 'Open table',
       pot: 0,
       board: [],
+    });
+    expect(table.handCompletion).toEqual({
+      handNumber: 1,
+      awards: [{ displayName: 'Mara', seatNumber: 1, amount: 200 }],
+    });
+  });
+
+  it('renders only whitelisted completed-hand awards and no private cards or ids', () => {
+    const snapshot = completedRoomSnapshot();
+    snapshot.last_hand!.players[0]!.guest_id = 'completed-private-guest-id';
+    const table = roomSnapshotToTableView(snapshot, 'guest_host');
+    const { container } = render(
+      <TableScreen table={table} connectionStatus="connected" />,
+    );
+
+    expect(
+      screen.getByRole('heading', { name: 'Hand 1 complete' }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText('Mara')).not.toHaveLength(0);
+    expect(screen.getByText('+200')).toBeInTheDocument();
+    expect(screen.getByText('Stacks updated')).toBeInTheDocument();
+    expect(container).not.toHaveTextContent('completed-private-guest-id');
+    expect(
+      container.querySelector('[data-testid="hero-hole-cards"]'),
+    ).toBeNull();
+    expect(
+      within(screen.getByLabelText('Six-max poker table')).queryAllByRole(
+        'img',
+      ),
+    ).toHaveLength(0);
+    expect(JSON.stringify(table.handCompletion)).not.toContain('guest_id');
+    expect(JSON.stringify(table.handCompletion)).not.toContain('hole_cards');
+  });
+
+  it('hides the retained previous result while a new hand is active', () => {
+    const snapshot = activeRoomSnapshot();
+    snapshot.last_hand = completedRoomSnapshot().last_hand;
+
+    const table = roomSnapshotToTableView(snapshot, 'guest_host');
+    render(<TableScreen table={table} connectionStatus="connected" />);
+
+    expect(table.handCompletion).toBeNull();
+    expect(screen.queryByText('Hand 1 complete')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Pot 250')).toBeInTheDocument();
+    expect(screen.getByLabelText('Community board')).toBeInTheDocument();
+  });
+
+  it('offers the authoritative host lifecycle CTA without client player-count gating', () => {
+    const snapshot = openRoomSnapshot();
+    const onRoomCommand = vi.fn(() => true);
+    render(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_host')}
+        connectionStatus="connected"
+        onRoomCommand={onRoomCommand}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Start hand' })[0]!);
+    expect(onRoomCommand).toHaveBeenCalledWith({ type: 'start_hand' });
+  });
+
+  it('presents next-hand readiness to the host and waiting copy to a guest', () => {
+    const snapshot = completedRoomSnapshot();
+    const host = render(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_host')}
+        connectionStatus="connected"
+        onRoomCommand={() => true}
+      />,
+    );
+    expect(
+      screen.getAllByRole('button', { name: 'Start next hand' })[0],
+    ).toBeEnabled();
+    host.unmount();
+
+    render(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_alice')}
+        connectionStatus="connected"
+      />,
+    );
+    expect(
+      screen.getByText('Waiting for host to start the next hand'),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Start next hand' }),
+    ).toBeNull();
+  });
+
+  it('maps room pending submit and acknowledgement phases without clearing them', () => {
+    const snapshot = openRoomSnapshot();
+    const submitting = roomSnapshotToTableView(
+      snapshot,
+      'guest_host',
+      'connected',
+      null,
+      {
+        commandId: 'start-one',
+        type: 'start_hand',
+        acknowledged: false,
+      },
+    );
+    const waiting = roomSnapshotToTableView(
+      snapshot,
+      'guest_host',
+      'connected',
+      null,
+      {
+        commandId: 'start-one',
+        type: 'start_hand',
+        acknowledged: true,
+      },
+    );
+
+    expect(submitting.roomPanel.pendingCommand).toEqual({
+      kind: 'start-hand',
+      phase: 'submitting',
+      label: 'Starting hand…',
+    });
+    expect(waiting.roomPanel.pendingCommand).toEqual({
+      kind: 'start-hand',
+      phase: 'waiting',
+      label: 'Waiting for the table to update…',
     });
   });
 

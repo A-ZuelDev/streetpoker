@@ -203,7 +203,7 @@ test('keeps stale state until an explicit reconnect receives fresh state', async
   await expect(page.getByText('Stale room')).toBeHidden();
 });
 
-test('shows a safe credential error without rendering the password', async ({
+test('corrects a wrong password and clears the stale entry error', async ({
   page,
 }) => {
   const harness = await mockSockets(page);
@@ -224,4 +224,23 @@ test('shows a safe credential error without rendering the password', async ({
   ).toBeVisible();
   await expect(page.locator('body')).not.toContainText('private server detail');
   await expect(page.locator('body')).not.toContainText('private-password');
+
+  await fillJoin(page, 'correct-password');
+  await expect.poll(() => harness.sockets.length).toBe(2);
+  const accepted = harness.sockets[1]!;
+  accepted.send(
+    JSON.stringify({
+      type: 'connected',
+      guest_id: 'guest_host',
+      room_code: 'ABCDEFGH',
+    }),
+  );
+  accepted.send(
+    JSON.stringify({ type: 'state', snapshot: openRoomSnapshot() }),
+  );
+  await expect(page.getByText('Table live')).toBeVisible();
+  await expect(
+    page.getByText('The room password was not accepted.'),
+  ).toBeHidden();
+  await expect(page.locator('body')).not.toContainText('correct-password');
 });

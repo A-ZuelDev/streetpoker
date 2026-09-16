@@ -2,12 +2,14 @@ import type { RoomView } from '../../realtime/messages';
 import type {
   CardRank,
   CardView,
+  HandCompletionView,
   MemberView,
   OccupiedSeatView,
   PlayerState,
   SeatPosition,
   SeatView,
   TableView,
+  RoomPendingView,
 } from './table.types';
 import type { ConnectionStatus } from '../../realtime/realtimeStore';
 import type { PendingPokerCommand } from '../../realtime/pokerActions';
@@ -111,6 +113,67 @@ function memberView(
   };
 }
 
+function roomPendingView(
+  pending: PendingRoomCommand | null,
+): RoomPendingView | null {
+  if (pending === null) {
+    return null;
+  }
+
+  const kindByCommand = {
+    request_seat: 'request-seat',
+    approve_seat: 'approve-seat',
+    reject_seat: 'reject-seat',
+    stand: 'stand',
+    leave: 'leave',
+    kick: 'kick',
+    start_hand: 'start-hand',
+    update_settings: 'settings',
+    close_room: 'close-room',
+  } as const;
+  const submittingLabelByCommand = {
+    request_seat:
+      pending.seatIndex === undefined
+        ? 'Requesting seat…'
+        : `Requesting seat ${pending.seatIndex + 1}…`,
+    approve_seat: 'Approving seat request…',
+    reject_seat: 'Rejecting seat request…',
+    stand: 'Standing up…',
+    leave: 'Leaving room…',
+    kick: 'Removing player…',
+    start_hand: 'Starting hand…',
+    update_settings: 'Saving room settings…',
+    close_room: 'Closing room…',
+  } as const;
+
+  return {
+    kind: kindByCommand[pending.type],
+    phase: pending.acknowledged ? 'waiting' : 'submitting',
+    label: pending.acknowledged
+      ? 'Waiting for the table to update…'
+      : submittingLabelByCommand[pending.type],
+  };
+}
+
+function handCompletionView(
+  completed: RoomView['last_hand'],
+): HandCompletionView | null {
+  if (completed === null) {
+    return null;
+  }
+
+  return {
+    handNumber: completed.hand_number,
+    awards: completed.players
+      .filter((player) => player.total_award > 0)
+      .map((player) => ({
+        displayName: player.nickname,
+        seatNumber: player.seat_index + 1,
+        amount: player.total_award,
+      })),
+  };
+}
+
 export function roomSnapshotToTableView(
   snapshot: RoomView,
   viewerGuestId: string,
@@ -133,6 +196,7 @@ export function roomSnapshotToTableView(
   const fresh = connectionStatus === 'connected' && stateConsistent;
   const commandsPending =
     pendingPokerCommand !== null || pendingRoomCommand !== null;
+  const pendingRoomView = roomPendingView(pendingRoomCommand);
   const actorHasRequest = snapshot.room.seat_requests.some(
     (request) => request.guest_id === viewerGuestId,
   );
@@ -235,8 +299,12 @@ export function roomSnapshotToTableView(
       connectionStatus,
       pendingCommand: pendingPokerCommand,
       roomCommandPending: pendingRoomCommand !== null,
+      roomPendingLabel: pendingRoomView?.label ?? null,
+      viewerIsHost: isHost,
       hasCompletedHand: snapshot.last_hand !== null,
     }),
+    handCompletion:
+      activeHand === null ? handCompletionView(snapshot.last_hand) : null,
     roomPanel: {
       members: snapshot.room.members.map((member) =>
         memberView(member, activeByGuest.get(member.guest_id), {
@@ -288,7 +356,10 @@ export function roomSnapshotToTableView(
         isHost &&
         snapshot.room.status === 'open' &&
         activeHand === null,
-      commandsPending,
+      showStand: actor?.status === 'seated',
+      startHandLabel:
+        snapshot.last_hand === null ? 'Start hand' : 'Start next hand',
+      pendingCommand: pendingRoomView,
       controlsDisabled: !fresh || commandsPending,
       handInProgress: snapshot.room.status === 'hand_in_progress',
       settings: {

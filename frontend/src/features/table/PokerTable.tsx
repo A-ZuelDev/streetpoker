@@ -49,23 +49,50 @@ export function PokerTable({ table, onRequestSeat }: PokerTableProps) {
       </div>
 
       <div className="table-center">
-        <span className="table-center__street">{table.street}</span>
-        <div className="board-cards" aria-label="Community board">
-          {boardSlots.map((index) => (
-            <PlayingCard
-              key={index}
-              identity={table.board[index] ?? null}
-              emphasis="board"
-            />
-          ))}
-        </div>
-        <div
-          className="pot-display"
-          aria-label={`Pot ${formatChips(table.pot)}`}
-        >
-          <span className="pot-display__label">Pot</span>
-          <span className="pot-display__amount">{formatChips(table.pot)}</span>
-        </div>
+        {table.handCompletion === null ? (
+          <>
+            <span className="table-center__street">{table.street}</span>
+            <div className="board-cards" aria-label="Community board">
+              {boardSlots.map((index) => (
+                <PlayingCard
+                  key={index}
+                  identity={table.board[index] ?? null}
+                  emphasis="board"
+                />
+              ))}
+            </div>
+            <div
+              className="pot-display"
+              aria-label={`Pot ${formatChips(table.pot)}`}
+            >
+              <span className="pot-display__label">Pot</span>
+              <span className="pot-display__amount">
+                {formatChips(table.pot)}
+              </span>
+            </div>
+          </>
+        ) : (
+          <div
+            className="hand-completion"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            <h2>Hand {table.handCompletion.handNumber} complete</h2>
+            <ul className="hand-completion__awards" aria-label="Hand awards">
+              {table.handCompletion.awards.map((award) => (
+                <li
+                  className="hand-completion__award"
+                  key={`${award.seatNumber}-${award.displayName}`}
+                >
+                  <span>{award.displayName}</span>
+                  <b>+{formatChips(award.amount)}</b>
+                </li>
+              ))}
+            </ul>
+            <p>Stacks updated</p>
+          </div>
+        )}
       </div>
 
       {table.seats.map((seat) => (

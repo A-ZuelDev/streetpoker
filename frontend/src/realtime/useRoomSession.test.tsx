@@ -464,7 +464,56 @@ describe('useRoomSession', () => {
     expect(setupResult.store.getState().lastPokerCommandError?.code).toBe(
       'action_send_failed',
     );
+    expect(setupResult.store.getState()).toMatchObject({
+      status: 'connected',
+      snapshot,
+      lastPokerCommandError: {
+        message:
+          'The action could not be sent. Try again when the table is ready.',
+      },
+    });
+    expect(
+      setupResult.store.getState().lastPokerCommandError?.message,
+    ).not.toContain('reconnect');
     expect(socket.commands).toHaveLength(1);
+  });
+
+  it('clears a failed room send without fabricating a disconnect', () => {
+    const setupResult = setup({ commandIdFactory: () => 'room-command' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const socket = setupResult.sockets[0]!;
+    const snapshot = openRoomSnapshot();
+    act(() => {
+      socket.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      socket.message({ type: 'state', snapshot });
+    });
+    socket.sendFails = true;
+
+    act(() => {
+      expect(
+        setupResult.result.current.sendRoomCommand({ type: 'start_hand' }),
+      ).toBe(false);
+    });
+
+    expect(setupResult.store.getState()).toMatchObject({
+      status: 'connected',
+      snapshot,
+      pendingRoomCommand: null,
+      lastRoomCommandError: {
+        code: 'room_command_send_failed',
+        message:
+          'The room action could not be sent. Try again when the table is ready.',
+      },
+    });
   });
 
   it('sends nothing while syncing, disconnected, stale, or superseded', () => {

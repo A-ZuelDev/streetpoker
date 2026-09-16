@@ -1,4 +1,12 @@
-import { expect, test, type Locator, type Page } from '@playwright/test';
+import {
+  expect,
+  test,
+  type Locator,
+  type Page,
+  type WebSocketRoute,
+} from '@playwright/test';
+
+import { activeRoomSnapshot } from '../src/test/roomSnapshots';
 
 async function requiredBox(locator: Locator, label: string) {
   const box = await locator.boundingBox();
@@ -97,7 +105,9 @@ test('loads the active poker shell without horizontal overflow', async ({
     page.getByRole('region', { name: 'Table actions' }),
   ).toBeVisible();
   await expect(page.getByRole('heading', { name: 'Members' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Chat' })).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Chat preview' }),
+  ).toBeVisible();
 
   const stage = page.getByRole('region', { name: 'Six-max poker table' });
   const openStageWidth = await stage.evaluate(
@@ -149,11 +159,15 @@ test('loads the active poker shell without horizontal overflow', async ({
     page.getByRole('button', { name: 'Expand Host controls section' }),
   ).toBeVisible();
 
-  await page.getByRole('button', { name: 'Collapse Chat section' }).click();
+  await page
+    .getByRole('button', { name: 'Collapse Chat preview section' })
+    .click();
   await expect(
     page.getByRole('textbox', { name: 'Chat message' }),
   ).toBeHidden();
-  await page.getByRole('button', { name: 'Expand Chat section' }).click();
+  await page
+    .getByRole('button', { name: 'Expand Chat preview section' })
+    .click();
   await expect(
     page.getByRole('textbox', { name: 'Chat message' }),
   ).toBeVisible();
@@ -204,7 +218,9 @@ test('loads the open table demo and host room state', async ({
       .getByText('Ember', { exact: true }),
   ).toBeVisible();
   await expect(page.getByRole('button', { name: 'Approve' })).toBeVisible();
-  await expect(page.getByRole('region', { name: 'Chat' })).toBeVisible();
+  await expect(
+    page.getByRole('region', { name: 'Chat preview' }),
+  ).toBeVisible();
   await expect(
     page.getByRole('textbox', { name: 'Chat message' }),
   ).toBeVisible();
@@ -219,6 +235,126 @@ test('loads the open table demo and host room state', async ({
     path: testInfo.outputPath('open-room-demo.png'),
     fullPage: true,
   });
+});
+
+test('stacks live notices and keeps action errors below wrapped controls', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const originalSetItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function (key, value) {
+      if (key === 'streetpoker.guest-token.v1') {
+        throw new DOMException('Storage blocked', 'SecurityError');
+      }
+      return originalSetItem.call(this, key, value);
+    };
+  });
+  const sockets: WebSocketRoute[] = [];
+  const frames: Array<Record<string, unknown>> = [];
+  await page.routeWebSocket(/\/ws\/rooms\//, (socket) => {
+    sockets.push(socket);
+    socket.onMessage((message) => {
+      if (typeof message === 'string') {
+        frames.push(JSON.parse(message) as Record<string, unknown>);
+      }
+    });
+  });
+  await page.goto('/');
+  const form = page
+    .getByRole('heading', { name: 'Join a room' })
+    .locator('xpath=ancestor::form');
+  await form.getByRole('textbox', { name: 'Room code' }).fill('ABCDEFGH');
+  await form.getByRole('textbox', { name: 'Nickname' }).fill('Mara');
+  await form.getByRole('button', { name: 'Join room' }).click();
+  await expect.poll(() => sockets.length).toBe(1);
+  const socket = sockets[0]!;
+  const snapshot = activeRoomSnapshot();
+  snapshot.room.members.push({
+    guest_id: 'guest_observer_private',
+    nickname: 'Observer',
+    status: 'in_room',
+    is_host: false,
+    stack: null,
+  });
+  socket.send(
+    JSON.stringify({
+      type: 'connected',
+      guest_id: 'guest_host',
+      room_code: 'ABCDEFGH',
+    }),
+  );
+  socket.send(JSON.stringify({ type: 'state', snapshot }));
+  await expect(page.getByText('Table live')).toBeVisible();
+  await expect(
+    page.getByText(
+      'Your browser session will not persist after this page closes.',
+    ),
+  ).toBeVisible();
+
+  await page.getByRole('button', { name: 'Call 50' }).click();
+  await expect.poll(() => frames.length).toBe(2);
+  socket.send(
+    JSON.stringify({
+      type: 'command_error',
+      command_id: frames[1]!.command_id,
+      code: 'illegal_call',
+      message: 'private action detail',
+    }),
+  );
+  const feedback = page.locator('.action-feedback');
+  await expect(feedback).toHaveText('Calling is not available now.');
+  expect(
+    await feedback.evaluate((element) => getComputedStyle(element).position),
+  ).toBe('static');
+  const feedbackBox = await requiredBox(feedback, 'Action feedback');
+  const actionButtons = page.locator(
+    '.action-bar > .action-button, .action-buttons',
+  );
+  for (let index = 0; index < (await actionButtons.count()); index += 1) {
+    const controlsBox = await requiredBox(
+      actionButtons.nth(index),
+      `Action controls ${index + 1}`,
+    );
+    expect(feedbackBox.y).toBeGreaterThanOrEqual(
+      controlsBox.y + controlsBox.height - 1,
+    );
+  }
+
+  await page.getByRole('button', { name: 'Kick Observer' }).click();
+  await page.getByRole('button', { name: 'Confirm kick Observer' }).click();
+  await expect.poll(() => frames.length).toBe(3);
+  socket.send(
+    JSON.stringify({
+      type: 'command_error',
+      command_id: frames[2]!.command_id,
+      code: 'member_not_found',
+      message: 'private member detail',
+    }),
+  );
+  await expect(
+    page.getByText('That room member is no longer available.'),
+  ).toBeVisible();
+  await socket.close({ code: 1012 });
+  await expect(
+    page.getByText('Disconnected. The displayed table is stale.'),
+  ).toBeVisible();
+
+  const noticeBoxes = await page
+    .locator('.table-notices .session-banner')
+    .evaluateAll((elements) =>
+      elements.map((element) => {
+        const box = element.getBoundingClientRect();
+        return { top: box.top, bottom: box.bottom };
+      }),
+    );
+  expect(noticeBoxes).toHaveLength(3);
+  for (let index = 1; index < noticeBoxes.length; index += 1) {
+    expect(noticeBoxes[index]!.top).toBeGreaterThanOrEqual(
+      noticeBoxes[index - 1]!.bottom,
+    );
+  }
+  await expect(page.locator('body')).not.toContainText('private action detail');
+  await expect(page.locator('body')).not.toContainText('private member detail');
 });
 
 test('keeps expanded room sections separated under vertical pressure', async ({
@@ -303,7 +439,10 @@ test('uses the full stage width under the 1120px overlay breakpoint', async ({
   const panel = page.getByRole('complementary', { name: 'Room tools' });
   const actionBar = page.getByRole('region', { name: 'Table actions' });
   const stageBox = await requiredBox(stage, 'Poker stage');
-  const panelBox = await requiredBox(panel, 'Room panel');
+  await expect(
+    page.getByRole('button', { name: 'Expand room panel' }),
+  ).toBeVisible();
+  const closedPanelBox = await requiredBox(panel, 'Closed room panel');
   const actionBarBox = await requiredBox(actionBar, 'Action bar');
 
   const viewport = await page.evaluate(() => ({
@@ -312,16 +451,24 @@ test('uses the full stage width under the 1120px overlay breakpoint', async ({
   }));
 
   expect(stageBox.width).toBeGreaterThanOrEqual(viewport.clientWidth - 1);
-  expect(panelBox.x).toBeLessThan(stageBox.x + stageBox.width);
+  expect(closedPanelBox.width).toBeLessThanOrEqual(45);
   expect(actionBarBox.width).toBeGreaterThanOrEqual(viewport.clientWidth - 1);
-  expect(panelBox.y + panelBox.height).toBeLessThanOrEqual(actionBarBox.y + 1);
+  expect(closedPanelBox.y + closedPanelBox.height).toBeLessThanOrEqual(
+    actionBarBox.y + 1,
+  );
   expect(viewport.scrollWidth).toBeLessThanOrEqual(viewport.clientWidth + 1);
 
   await page.screenshot({
-    path: testInfo.outputPath('panel-overlay-open-1024x768.png'),
+    path: testInfo.outputPath('panel-overlay-default-closed-1024x768.png'),
     fullPage: true,
   });
 
+  await page.getByRole('button', { name: 'Expand room panel' }).click();
+  const openPanelBox = await requiredBox(panel, 'Open room panel');
+  expect(openPanelBox.x).toBeLessThan(stageBox.x + stageBox.width);
+  expect(openPanelBox.y + openPanelBox.height).toBeLessThanOrEqual(
+    actionBarBox.y + 1,
+  );
   await page.getByRole('button', { name: 'Collapse room panel' }).click();
   await expect(
     page.getByRole('button', { name: 'Expand room panel' }),
@@ -360,6 +507,7 @@ test('keeps the overlay above a wrapped action bar', async ({
 
   const panel = page.getByRole('complementary', { name: 'Room tools' });
   const actionBar = page.getByRole('region', { name: 'Table actions' });
+  await page.getByRole('button', { name: 'Expand room panel' }).click();
   const panelBox = await requiredBox(panel, 'Room panel');
   const actionBarBox = await requiredBox(actionBar, 'Wrapped action bar');
 
@@ -398,7 +546,9 @@ test('keeps critical table content reachable at phone width', async ({
   await expect(page.getByText('Backend online')).toBeVisible();
 
   const panel = page.getByRole('complementary', { name: 'Room tools' });
-  await page.getByRole('button', { name: 'Collapse room panel' }).click();
+  await expect(
+    page.getByRole('button', { name: 'Expand room panel' }),
+  ).toBeVisible();
   await expect
     .poll(() =>
       panel.evaluate((element) => element.getBoundingClientRect().width),
@@ -466,7 +616,9 @@ test('keeps the hero and board clear at short phone sizes', async ({
     await expect(page.getByText('Backend online')).toBeVisible();
 
     const panel = page.getByRole('complementary', { name: 'Room tools' });
-    await page.getByRole('button', { name: 'Collapse room panel' }).click();
+    await expect(
+      page.getByRole('button', { name: 'Expand room panel' }),
+    ).toBeVisible();
     await expect
       .poll(() =>
         panel.evaluate((element) => element.getBoundingClientRect().width),

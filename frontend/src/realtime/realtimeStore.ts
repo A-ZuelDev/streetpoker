@@ -14,6 +14,12 @@ export interface CommandErrorState {
   readonly message: string;
 }
 
+export interface PokerCommandErrorState extends CommandErrorState {
+  readonly handNumber: number;
+  readonly expectedActionSequence: number;
+  readonly actorGuestId: string;
+}
+
 export interface RoomExitState {
   readonly kind: 'left' | 'kicked' | 'closed';
   readonly roomCode: string;
@@ -26,7 +32,7 @@ export interface RealtimeState {
   readonly roomCode: string | null;
   readonly snapshot: RoomView | null;
   readonly lastConnectionError: SessionError | null;
-  readonly lastPokerCommandError: CommandErrorState | null;
+  readonly lastPokerCommandError: PokerCommandErrorState | null;
   readonly lastRoomCommandError: CommandErrorState | null;
   readonly pendingPokerCommand: PendingPokerCommand | null;
   readonly pendingRoomCommand: PendingRoomCommand | null;
@@ -99,11 +105,19 @@ export function createRealtimeStore(): RealtimeStore {
         hand.hand_number === pokerPending.handNumber &&
         hand.action_sequence === pokerPending.expectedActionSequence &&
         hand.current_actor === pokerPending.actorGuestId;
+      const pokerError = get().lastPokerCommandError;
+      const pokerErrorStillRelevant =
+        pokerError !== null &&
+        hand !== null &&
+        hand.hand_number === pokerError.handNumber &&
+        hand.action_sequence === pokerError.expectedActionSequence &&
+        hand.current_actor === pokerError.actorGuestId;
       const roomPending = get().pendingRoomCommand;
       set({
         status: 'connected',
         snapshot,
         pendingPokerCommand: pokerStillPending ? pokerPending : null,
+        lastPokerCommandError: pokerErrorStillRelevant ? pokerError : null,
         pendingRoomCommand:
           roomPending?.acknowledged === true ? null : roomPending,
       });
@@ -121,7 +135,15 @@ export function createRealtimeStore(): RealtimeStore {
       if (pending === null || error.commandId !== pending.commandId) {
         return;
       }
-      set({ pendingPokerCommand: null, lastPokerCommandError: error });
+      set({
+        pendingPokerCommand: null,
+        lastPokerCommandError: {
+          ...error,
+          handNumber: pending.handNumber,
+          expectedActionSequence: pending.expectedActionSequence,
+          actorGuestId: pending.actorGuestId,
+        },
+      });
     },
     receiveRoomCommandError(error) {
       const pending = get().pendingRoomCommand;
@@ -151,12 +173,22 @@ export function createRealtimeStore(): RealtimeStore {
       return true;
     },
     cancelPendingPokerCommand(commandId, error) {
-      if (get().pendingPokerCommand?.commandId !== commandId) {
+      const pending = get().pendingPokerCommand;
+      if (pending?.commandId !== commandId) {
         return;
       }
       set({
         pendingPokerCommand: null,
-        ...(error === undefined ? {} : { lastPokerCommandError: error }),
+        ...(error === undefined
+          ? {}
+          : {
+              lastPokerCommandError: {
+                ...error,
+                handNumber: pending.handNumber,
+                expectedActionSequence: pending.expectedActionSequence,
+                actorGuestId: pending.actorGuestId,
+              },
+            }),
       });
     },
     cancelPendingRoomCommand(commandId, error) {
@@ -169,7 +201,19 @@ export function createRealtimeStore(): RealtimeStore {
       });
     },
     reportLocalPokerCommandError(error) {
-      set({ lastPokerCommandError: error });
+      const hand = get().snapshot?.active_hand;
+      const guestId = get().guestId;
+      if (hand === null || hand === undefined || guestId === null) {
+        return;
+      }
+      set({
+        lastPokerCommandError: {
+          ...error,
+          handNumber: hand.hand_number,
+          expectedActionSequence: hand.action_sequence,
+          actorGuestId: guestId,
+        },
+      });
     },
     reportLocalRoomCommandError(error) {
       set({ lastRoomCommandError: error });

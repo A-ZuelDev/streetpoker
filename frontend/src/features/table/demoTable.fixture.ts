@@ -127,6 +127,7 @@ export const activeDemoTable = {
     },
   },
   liveActions: null,
+  handCompletion: null,
   roomPanel: {
     members: [
       { nickname: 'Mara', status: 'Playing', stack: 7_850, isHost: true },
@@ -225,6 +226,7 @@ export const openDemoTable = {
   ],
   legalActions: null,
   liveActions: null,
+  handCompletion: null,
   roomPanel: {
     members: [
       { nickname: 'Mara', status: 'Seated', stack: 10_000, isHost: true },

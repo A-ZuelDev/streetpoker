@@ -135,6 +135,36 @@ describe('realtimeStore', () => {
     expect(store.getState().snapshot).toBe(snapshot);
   });
 
+  it('expires a poker error when authoritative action context advances', () => {
+    const store = createRealtimeStore();
+    const snapshot = activeRoomSnapshot();
+    store.getState().receiveConnected('guest_host', 'ABCDEFGH');
+    store.getState().replaceSnapshot(snapshot);
+    store.getState().tryBeginPokerCommand({
+      commandId: 'one',
+      type: 'call',
+      handNumber: 1,
+      expectedActionSequence: 2,
+      actorGuestId: 'guest_host',
+    });
+    store.getState().receivePokerCommandError({
+      commandId: 'one',
+      code: 'illegal_call',
+      message: 'Calling is not available now.',
+    });
+    store.getState().replaceSnapshot(structuredClone(snapshot));
+    expect(store.getState().lastPokerCommandError).not.toBeNull();
+
+    const advanced = structuredClone(snapshot);
+    advanced.active_hand!.action_sequence = 3;
+    advanced.active_hand!.current_actor = 'guest_alice';
+    store.getState().replaceSnapshot(advanced);
+    expect(store.getState().lastPokerCommandError).toBeNull();
+
+    store.getState().replaceSnapshot(structuredClone(snapshot));
+    expect(store.getState().lastPokerCommandError).toBeNull();
+  });
+
   it('resolves pending only when authoritative action context changes', () => {
     const store = createRealtimeStore();
     const snapshot = activeRoomSnapshot();
