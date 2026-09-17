@@ -851,3 +851,225 @@ def test_close_command_model_has_no_room_or_actor_identity_fields() -> None:
     command = CloseRoomCommand(type="close_room", command_id="close")
 
     assert command.model_dump() == {"command_id": "close", "type": "close_room"}
+
+
+def test_replaced_host_cannot_issue_room_commands_or_remove_new_binding() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        service.request_seat(room_id=room_id, actor=guests["host"], seat_index=0)
+        service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+        coordinator = RealtimeRoomCoordinator(service)
+        old_socket = RecordingWebSocket()
+        old = await coordinator.bind(
+            cast(WebSocket, old_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        before = service.get_room_view(room_id=room_id, viewer=guests["host"])
+        new_socket = RecordingWebSocket()
+        current = await coordinator.bind(
+            cast(WebSocket, new_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        assert service.get_room_view(room_id=room_id, viewer=guests["host"]) == before
+        assert not coordinator.registry.is_registered(old)
+        assert coordinator.registry.is_registered(current)
+
+        stale_commands = [
+            {"type": "start_hand", "command_id": "stale-start", "hand_number": 1},
+            {"type": "update_settings", "command_id": "stale-settings", "room_name": "Changed"},
+            {
+                "type": "kick",
+                "command_id": "stale-kick",
+                "target_guest_id": guests["alice"].value,
+            },
+            {"type": "close_room", "command_id": "stale-close"},
+        ]
+        for payload in stale_commands:
+            await coordinator.handle_command(old, client_command_adapter.validate_python(payload))
+            assert service.get_room_view(room_id=room_id, viewer=guests["host"]) == before
+        await coordinator.disconnect(old)
+        assert coordinator.registry.is_registered(current)
+        assert coordinator.registry.sessions_by_guest(room_id)[guests["host"]] == (current,)
+        await asyncio.sleep(0)
+        assert old_socket.closed == [(1008, "session ended")]
+        assert all("stale" not in str(message) for message in old_socket.sent)
+
+        await coordinator.handle_command(
+            current,
+            client_command_adapter.validate_python(
+                {"type": "start_hand", "command_id": "current-start", "hand_number": 1}
+            ),
+        )
+        assert service.get_room_view(room_id=room_id, viewer=guests["host"]).active_hand is not None
+        await asyncio.sleep(0)
+        assert any(
+            cast(dict[str, object], message).get("command_id") == "current-start"
+            for message in new_socket.sent
+        )
+        await coordinator.disconnect(current)
+
+    asyncio.run(scenario())
+
+
+def test_replaced_actor_cannot_act_but_new_binding_can() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        service.request_seat(room_id=room_id, actor=guests["host"], seat_index=0)
+        service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+        started = service.start_hand(room_id=room_id, actor=guests["host"], expected_hand_number=1)
+        hand = started.active_hand
+        assert hand is not None and ActionKind.CALL in hand.legal_actions.kinds
+        actor = hand.current_actor
+        actor_token = token(1) if actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        old = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        before = service.get_room_view(room_id=room_id, viewer=actor)
+        current = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        command = CallCommand(
+            type="call",
+            command_id="call",
+            hand_number=hand.hand_number,
+            expected_action_sequence=hand.action_sequence,
+        )
+        await coordinator.handle_command(old, command)
+        assert service.get_room_view(room_id=room_id, viewer=actor) == before
+        await coordinator.disconnect(old)
+        assert coordinator.registry.is_registered(current)
+        await coordinator.handle_command(current, command)
+        after = service.get_room_view(room_id=room_id, viewer=actor)
+        assert after.active_hand is not None
+        assert after.active_hand.action_sequence == hand.action_sequence + 1
+        await coordinator.disconnect(current)
+
+    asyncio.run(scenario())
+
+
+def test_replaced_guest_cannot_leave_but_current_guest_can() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        coordinator = RealtimeRoomCoordinator(service)
+        old = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(2)),
+        )
+        current = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(2)),
+        )
+        before = service.get_room_snapshot(room_id)
+        leave = client_command_adapter.validate_python({"type": "leave", "command_id": "leave"})
+        await coordinator.handle_command(old, leave)
+        assert service.get_room_snapshot(room_id) == before
+        assert coordinator.registry.is_registered(current)
+        await coordinator.handle_command(current, leave)
+        assert guests["alice"] not in {
+            member.guest_id for member in service.get_room_snapshot(room_id).members
+        }
+        assert not coordinator.registry.is_registered(current)
+        await coordinator.disconnect(old)
+        await coordinator.disconnect(current)
+
+    asyncio.run(scenario())
+
+
+def test_near_simultaneous_binds_install_last_successful_session() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        coordinator = RealtimeRoomCoordinator(service)
+        before = service.get_room_view(room_id=room_id, viewer=guests["host"])
+        async with coordinator._lock_for(room_id):
+            first_task = asyncio.create_task(
+                coordinator.bind(
+                    cast(WebSocket, RecordingWebSocket()),
+                    room_code,
+                    ConnectRequest(type="connect", guest_token=token(1)),
+                )
+            )
+            await asyncio.sleep(0)
+            second_task = asyncio.create_task(
+                coordinator.bind(
+                    cast(WebSocket, RecordingWebSocket()),
+                    room_code,
+                    ConnectRequest(type="connect", guest_token=token(1)),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not first_task.done() and not second_task.done()
+        first, second = await asyncio.gather(first_task, second_task)
+        assert not coordinator.registry.is_registered(first)
+        assert coordinator.registry.is_registered(second)
+        assert coordinator.registry.sessions_by_guest(room_id)[guests["host"]] == (second,)
+        assert service.get_room_view(room_id=room_id, viewer=guests["host"]) == before
+        await coordinator.disconnect(first)
+        assert coordinator.registry.is_registered(second)
+        await coordinator.handle_command(
+            second,
+            RequestSeatCommand(type="request_seat", command_id="seat", seat_index=1),
+        )
+        assert service.get_room_snapshot(room_id).seats[1].guest_id == guests["host"]
+        await coordinator.disconnect(second)
+
+    asyncio.run(scenario())
+
+
+def test_queued_old_command_loses_when_replacement_acquires_room_lock_first() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        coordinator = RealtimeRoomCoordinator(service)
+        old = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        async with coordinator._lock_for(room_id):
+            bind_task = asyncio.create_task(
+                coordinator.bind(
+                    cast(WebSocket, RecordingWebSocket()),
+                    room_code,
+                    ConnectRequest(type="connect", guest_token=token(1)),
+                )
+            )
+            await asyncio.sleep(0)
+            stale_command_task = asyncio.create_task(
+                coordinator.handle_command(
+                    old,
+                    RequestSeatCommand(type="request_seat", command_id="stale", seat_index=1),
+                )
+            )
+            await asyncio.sleep(0)
+            assert not bind_task.done() and not stale_command_task.done()
+        current = await bind_task
+        await stale_command_task
+        assert coordinator.registry.is_registered(current)
+        assert not coordinator.registry.is_registered(old)
+        assert service.get_room_snapshot(room_id).seats[1].guest_id is None
+        await coordinator.disconnect(old)
+        assert coordinator.registry.is_registered(current)
+        await coordinator.handle_command(
+            current,
+            RequestSeatCommand(type="request_seat", command_id="current", seat_index=1),
+        )
+        assert service.get_room_snapshot(room_id).seats[1].guest_id == guests["host"]
+        await coordinator.disconnect(current)
+
+    asyncio.run(scenario())

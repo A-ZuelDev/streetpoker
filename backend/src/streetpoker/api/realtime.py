@@ -100,6 +100,7 @@ OUTBOUND_QUEUE_CAPACITY: Final = 32
 NORMAL_CLOSE: Final = 1000
 POLICY_CLOSE: Final = 1008
 TRY_AGAIN_CLOSE: Final = 1013
+SUPERSEDED_CLOSE_REASON: Final = "session ended"
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,10 +155,10 @@ async def _run_serialized_in_thread[**P, T](
 
 
 class ConnectionRegistry:
-    """Own socket bindings and ordered, bounded outbound writers only."""
+    """Own one authoritative socket per room guest and bounded outbound writers."""
 
     def __init__(self) -> None:
-        self._by_room: dict[RoomId, dict[GuestId, set[SocketSession]]] = {}
+        self._by_room: dict[RoomId, dict[GuestId, SocketSession]] = {}
         self._by_socket: dict[WebSocket, SocketSession] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
 
@@ -170,24 +171,30 @@ class ConnectionRegistry:
             guest_id=guest_id,
             outbound=asyncio.Queue(maxsize=OUTBOUND_QUEUE_CAPACITY),
         )
-        self._by_room.setdefault(room_id, {}).setdefault(guest_id, set()).add(session)
-        self._by_socket[websocket] = session
+        room = self._by_room.setdefault(room_id, {})
+        previous = room.get(guest_id)
         session.writer = asyncio.create_task(self._write(session))
+        room[guest_id] = session
+        self._by_socket[websocket] = session
+        if previous is not None:
+            self._remove(previous)
+            self._schedule(self._abort(previous, POLICY_CLOSE, SUPERSEDED_CLOSE_REASON))
         return session
 
     def is_registered(self, session: SocketSession) -> bool:
-        return session.registered and self._by_socket.get(session.websocket) is session
+        return (
+            session.registered
+            and self._by_socket.get(session.websocket) is session
+            and self._by_room.get(session.room_id, {}).get(session.guest_id) is session
+        )
 
     def sessions_by_guest(self, room_id: RoomId) -> dict[GuestId, tuple[SocketSession, ...]]:
         return {
-            guest_id: tuple(sessions)
-            for guest_id, sessions in self._by_room.get(room_id, {}).items()
+            guest_id: (session,) for guest_id, session in self._by_room.get(room_id, {}).items()
         }
 
     def all_sessions(self, room_id: RoomId) -> tuple[SocketSession, ...]:
-        return tuple(
-            session for sessions in self._by_room.get(room_id, {}).values() for session in sessions
-        )
+        return tuple(self._by_room.get(room_id, {}).values())
 
     def enqueue(self, session: SocketSession, message: OutboundMessage) -> bool:
         if not self.is_registered(session):
@@ -201,8 +208,8 @@ class ConnectionRegistry:
         return True
 
     def detach_guest(self, room_id: RoomId, guest_id: GuestId, *, code: int, reason: str) -> None:
-        sessions = tuple(self._by_room.get(room_id, {}).get(guest_id, ()))
-        for session in sessions:
+        session = self._by_room.get(room_id, {}).get(guest_id)
+        if session is not None:
             self._detach_and_queue_close(session, code=code, reason=reason)
 
     def detach_session(self, session: SocketSession, *, code: int, reason: str) -> None:
@@ -222,7 +229,8 @@ class ConnectionRegistry:
                 with suppress(asyncio.CancelledError):
                     await writer
             else:
-                await writer
+                with suppress(asyncio.CancelledError):
+                    await writer
 
     async def shutdown(self) -> None:
         sessions = tuple(self._by_socket.values())
@@ -251,15 +259,13 @@ class ConnectionRegistry:
         if not session.registered:
             return
         session.registered = False
-        self._by_socket.pop(session.websocket, None)
+        if self._by_socket.get(session.websocket) is session:
+            self._by_socket.pop(session.websocket)
         room = self._by_room.get(session.room_id)
         if room is None:
             return
-        sessions = room.get(session.guest_id)
-        if sessions is not None:
-            sessions.discard(session)
-            if not sessions:
-                room.pop(session.guest_id, None)
+        if room.get(session.guest_id) is session:
+            room.pop(session.guest_id)
         if not room:
             self._by_room.pop(session.room_id, None)
 

@@ -83,3 +83,13 @@ There is no disconnect grace period or automatic standing in 11A. A disconnected
 remains eligible under the existing start-hand rules. An offline current actor can stall an active
 hand because action deadlines and timeout actions belong to 11C. Reconnect is manual, and commands
 are not replayed automatically.
+
+## Phase 11B authoritative socket replacement
+
+One room guest now has one authoritative WebSocket session. A successful same-token bind
+installs the new session under the room coordinator lock, revokes the old session, and sends
+the new socket a fresh viewer-specific state. The old socket closes with policy code 1008
+and a fixed `session ended` reason. Commands from it are ignored, and its late cleanup
+cannot remove the new binding. Leave, Kick, and Close Room still terminate membership or
+the room through their explicit commands. Replacement itself changes no room or poker
+state. Manual reconnect and the Phase 11A disconnect rules otherwise remain in effect.
