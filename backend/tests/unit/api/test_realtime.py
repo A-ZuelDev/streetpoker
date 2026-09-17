@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import threading
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -22,11 +23,14 @@ from streetpoker.api.schemas.realtime import (
     ConnectionErrorMessage,
     ConnectRequest,
     RequestSeatCommand,
+    StartHandCommand,
     UpdateSettingsCommand,
     client_command_adapter,
     room_view_dto,
 )
 from streetpoker.application import (
+    ActionDeadlineExpiredError,
+    Clock,
     GuestId,
     InvalidGuestIdError,
     InvalidRoomCodeError,
@@ -36,6 +40,7 @@ from streetpoker.application import (
     RoomService,
     RoomSettings,
     StaleHandVersionError,
+    TurnDeadline,
 )
 from streetpoker.application.rooms import _PasswordRecord
 from streetpoker.domain import ActionKind, PlayerId, SeededRandomSource
@@ -83,7 +88,29 @@ class ThreadRecordingHasher:
         return self._delegate.verify_password(password, record)
 
 
-def built_service(*, approval: bool = False) -> tuple[RoomService, RoomId, dict[str, GuestId]]:
+class FakeClock:
+    def __init__(self) -> None:
+        self.monotonic_ms = 1_000
+        self.unix_ms = 1_800_000_000_000
+        self.advance_after_read = False
+
+    def now_monotonic_ms(self) -> int:
+        value = self.monotonic_ms
+        if self.advance_after_read:
+            self.monotonic_ms += 1
+        return value
+
+    def now_unix_ms(self) -> int:
+        return self.unix_ms
+
+    def advance(self, milliseconds: int) -> None:
+        self.monotonic_ms += milliseconds
+        self.unix_ms += milliseconds
+
+
+def built_service(
+    *, approval: bool = False, clock: Clock | None = None
+) -> tuple[RoomService, RoomId, dict[str, GuestId]]:
     next_player = 0
 
     def player_id() -> PlayerId:
@@ -102,6 +129,7 @@ def built_service(*, approval: bool = False) -> tuple[RoomService, RoomId, dict[
         player_id_factory=player_id,
         password_hasher=Pbkdf2PasswordHasher(iterations=1),
         random_source_factory=lambda: SeededRandomSource(47),
+        clock=clock,
     )
     created = service.create_room(
         actor=guests["host"],
@@ -1071,5 +1099,481 @@ def test_queued_old_command_loses_when_replacement_acquires_room_lock_first() ->
         )
         assert service.get_room_snapshot(room_id).seats[1].guest_id == guests["host"]
         await coordinator.disconnect(current)
+
+    asyncio.run(scenario())
+
+
+def started_timed_service() -> tuple[RoomService, RoomId, dict[str, GuestId], FakeClock]:
+    clock = FakeClock()
+    service, room_id, guests = built_service(clock=clock)
+    room_code = service.get_room_snapshot(room_id).room_code
+    service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+    service.request_seat(room_id=room_id, actor=guests["host"], seat_index=0)
+    service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+    started = service.start_hand(room_id=room_id, actor=guests["host"], expected_hand_number=1)
+    assert started.active_hand is not None
+    return service, room_id, guests, clock
+
+
+def current_deadline(service: RoomService, room_id: RoomId) -> TurnDeadline:
+    deadline = service.current_turn_deadline(room_id)
+    assert deadline is not None
+    return deadline
+
+
+def test_fake_clock_creates_and_replaces_turn_deadlines_without_real_sleep() -> None:
+    service, room_id, guests, clock = started_timed_service()
+    first = current_deadline(service, room_id)
+    view = service.get_room_view(room_id=room_id, viewer=guests["host"])
+    assert view.active_hand is not None
+    assert first.monotonic_ms == 31_000
+    assert first.unix_ms == 1_800_000_030_000
+    assert first.revision == 1
+    assert view.active_hand.action_deadline_unix_ms == first.unix_ms
+    assert view.active_hand.current_actor == first.actor
+
+    clock.advance(29_999)
+    acted = service.call(
+        room_id=room_id,
+        actor=first.actor,
+        hand_number=first.hand_number,
+        expected_action_sequence=first.action_sequence,
+    )
+    second = current_deadline(service, room_id)
+    assert acted.active_hand is not None
+    assert second.action_sequence == 1
+    assert second.revision == 2
+    assert second.actor != first.actor
+    assert second.monotonic_ms == 60_999
+    assert second.unix_ms == 1_800_000_059_999
+
+    clock.advance(1)
+    assert service.expire_turn(first) is False
+    assert service.current_turn_deadline(room_id) == second
+    clock.unix_ms += 100_000
+    assert service.expire_turn(second) is False
+
+
+def test_equal_deadline_rejects_player_action_and_timeout_checks_to_next_street() -> None:
+    service, room_id, guests, clock = started_timed_service()
+    first = current_deadline(service, room_id)
+    service.call(
+        room_id=room_id,
+        actor=first.actor,
+        hand_number=first.hand_number,
+        expected_action_sequence=first.action_sequence,
+    )
+    second = current_deadline(service, room_id)
+    before = service.get_room_view(room_id=room_id, viewer=guests["host"])
+    assert before.active_hand is not None
+    assert ActionKind.CHECK in before.active_hand.legal_actions.kinds
+    clock.advance(30_000)
+    with pytest.raises(ActionDeadlineExpiredError):
+        service.check(
+            room_id=room_id,
+            actor=second.actor,
+            hand_number=second.hand_number,
+            expected_action_sequence=second.action_sequence,
+        )
+    assert service.get_room_view(room_id=room_id, viewer=guests["host"]) == before
+    assert service.expire_turn(second) is True
+    after = service.get_room_view(room_id=room_id, viewer=guests["host"])
+    assert after.active_hand is not None
+    assert after.active_hand.action_sequence == 2
+    assert after.active_hand.phase.value == "flop"
+    assert current_deadline(service, room_id).revision == 3
+    assert service.expire_turn(second) is False
+
+
+def test_timeout_folds_when_check_illegal_and_settles_once() -> None:
+    service, room_id, guests, clock = started_timed_service()
+    first = current_deadline(service, room_id)
+    before = service.get_room_view(room_id=room_id, viewer=guests["host"])
+    assert before.active_hand is not None
+    assert ActionKind.CHECK not in before.active_hand.legal_actions.kinds
+    clock.advance(30_001)
+    with pytest.raises(ActionDeadlineExpiredError):
+        service.call(
+            room_id=room_id,
+            actor=first.actor,
+            hand_number=first.hand_number,
+            expected_action_sequence=first.action_sequence,
+        )
+    assert service.expire_turn(first) is True
+    after = service.get_room_view(room_id=room_id, viewer=guests["host"])
+    assert after.active_hand is None
+    assert after.last_hand is not None
+    assert after.last_hand.final_action_sequence == 1
+    assert after.last_hand.source.value == "complete_by_fold"
+    assert service.current_turn_deadline(room_id) is None
+    assert service.expire_turn(first) is False
+    assert sum(seat.stack or 0 for seat in after.room.seats) == 2_000
+
+
+def test_old_hand_sequence_actor_and_revision_callbacks_are_ignored() -> None:
+    service, room_id, guests, clock = started_timed_service()
+    first = current_deadline(service, room_id)
+    clock.advance(30_000)
+    assert service.expire_turn(replace(first, hand_number=2)) is False
+    assert service.expire_turn(replace(first, action_sequence=1)) is False
+    other = guests["alice"] if first.actor == guests["host"] else guests["host"]
+    assert service.expire_turn(replace(first, actor=other)) is False
+    assert service.expire_turn(replace(first, revision=first.revision + 1)) is False
+    assert service.expire_turn(replace(first, monotonic_ms=first.monotonic_ms + 1)) is False
+    assert service.current_turn_deadline(room_id) == first
+    assert service.expire_turn(first) is True
+    service.start_hand(room_id=room_id, actor=guests["host"], expected_hand_number=2)
+    second_hand = current_deadline(service, room_id)
+    assert second_hand.hand_number == 2
+    assert service.expire_turn(first) is False
+    assert service.current_turn_deadline(room_id) == second_hand
+
+
+def test_disconnect_reconnect_and_replacement_preserve_deadline_then_sync_timeout_state() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        deadline = current_deadline(service, room_id)
+        actor_token = token(1) if deadline.actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        first = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        scheduled = coordinator._turn_tasks[room_id]
+        await coordinator.disconnect(first)
+        assert service.current_turn_deadline(room_id) == deadline
+        assert coordinator._turn_tasks[room_id] is scheduled
+
+        second_socket = RecordingWebSocket()
+        second = await coordinator.bind(
+            cast(WebSocket, second_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        replacement_socket = RecordingWebSocket()
+        replacement = await coordinator.bind(
+            cast(WebSocket, replacement_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        await coordinator.disconnect(second)
+        assert service.current_turn_deadline(room_id) == deadline
+        assert coordinator._turn_tasks[room_id] is scheduled
+        assert coordinator.registry.is_registered(replacement)
+        await asyncio.sleep(0)
+        initial = cast(dict[str, object], replacement_socket.sent[1])
+        snapshot = cast(dict[str, object], initial["snapshot"])
+        active = cast(dict[str, object], snapshot["active_hand"])
+        assert active["action_deadline_unix_ms"] == deadline.unix_ms
+
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(deadline) is True
+        assert room_id not in coordinator._turn_tasks
+        await coordinator.disconnect(replacement)
+        reconnected_socket = RecordingWebSocket()
+        reconnected = await coordinator.bind(
+            cast(WebSocket, reconnected_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        await asyncio.sleep(0)
+        latest = cast(dict[str, object], reconnected_socket.sent[1])
+        latest_snapshot = cast(dict[str, object], latest["snapshot"])
+        assert latest_snapshot["active_hand"] is None
+        assert latest_snapshot["last_hand"] is not None
+        await coordinator.disconnect(reconnected)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_reconnect_after_expiry_resolves_timeout_before_fresh_state() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        deadline = current_deadline(service, room_id)
+        clock.advance(30_000)
+        actor_token = token(1) if deadline.actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        socket = RecordingWebSocket()
+        session = await coordinator.bind(
+            cast(WebSocket, socket),
+            service.get_room_snapshot(room_id).room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        await asyncio.sleep(0)
+        state = cast(dict[str, object], socket.sent[1])
+        snapshot = cast(dict[str, object], state["snapshot"])
+        assert snapshot["active_hand"] is None
+        assert snapshot["last_hand"] is not None
+        assert service.current_turn_deadline(room_id) is None
+        assert room_id not in coordinator._turn_tasks
+        await coordinator.disconnect(session)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_expired_client_action_resolves_timeout_before_rejecting_command() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        deadline = current_deadline(service, room_id)
+        actor_token = token(1) if deadline.actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        socket = RecordingWebSocket()
+        session = await coordinator.bind(
+            cast(WebSocket, socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        await asyncio.sleep(0)
+        socket.sent.clear()
+        clock.advance(30_000)
+        await coordinator.handle_command(
+            session,
+            CallCommand(
+                type="call",
+                command_id="late",
+                hand_number=deadline.hand_number,
+                expected_action_sequence=deadline.action_sequence,
+            ),
+        )
+        await asyncio.sleep(0)
+        assert [cast(dict[str, object], item)["type"] for item in socket.sent] == [
+            "command_error",
+            "state",
+        ]
+        assert cast(dict[str, object], socket.sent[0])["code"] == "stale_game_state"
+        assert service.current_turn_deadline(room_id) is None
+        settled = service.get_room_view(room_id=room_id, viewer=deadline.actor)
+        assert settled.last_hand is not None
+        assert settled.last_hand.final_action_sequence == 1
+        await coordinator.disconnect(session)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_timeout_and_late_action_race_mutates_once() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        deadline = current_deadline(service, room_id)
+        actor_token = token(1) if deadline.actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            service.get_room_snapshot(room_id).room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        clock.advance(30_000)
+        await asyncio.gather(
+            coordinator.expire_turn(deadline),
+            coordinator.handle_command(
+                session,
+                CallCommand(
+                    type="call",
+                    command_id="racing",
+                    hand_number=deadline.hand_number,
+                    expected_action_sequence=deadline.action_sequence,
+                ),
+            ),
+        )
+        settled = service.get_room_view(room_id=room_id, viewer=deadline.actor)
+        assert settled.last_hand is not None
+        assert settled.last_hand.final_action_sequence == 1
+        assert service.expire_turn(deadline) is False
+        await coordinator.disconnect(session)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_timeout_broadcasts_separate_private_views_and_ignores_stale_callbacks() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        first = current_deadline(service, room_id)
+        service.call(
+            room_id=room_id,
+            actor=first.actor,
+            hand_number=first.hand_number,
+            expected_action_sequence=first.action_sequence,
+        )
+        second = current_deadline(service, room_id)
+        room_code = service.get_room_snapshot(room_id).room_code
+        coordinator = RealtimeRoomCoordinator(service)
+        host_socket = RecordingWebSocket()
+        alice_socket = RecordingWebSocket()
+        host = await coordinator.bind(
+            cast(WebSocket, host_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        alice = await coordinator.bind(
+            cast(WebSocket, alice_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(2)),
+        )
+        await asyncio.sleep(0)
+        host_socket.sent.clear()
+        alice_socket.sent.clear()
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(replace(second, revision=99)) is False
+        assert host_socket.sent == [] and alice_socket.sent == []
+        assert await coordinator.expire_turn(second) is True
+        await asyncio.sleep(0)
+        assert len(host_socket.sent) == len(alice_socket.sent) == 1
+        for socket, viewer in ((host_socket, guests["host"]), (alice_socket, guests["alice"])):
+            message = cast(dict[str, object], socket.sent[0])
+            assert message["type"] == "state"
+            snapshot = cast(dict[str, object], message["snapshot"])
+            active = cast(dict[str, object], snapshot["active_hand"])
+            players = cast(list[dict[str, object]], active["players"])
+            assert {player["guest_id"] for player in players if player["hole_cards"]} == {
+                viewer.value
+            }
+            assert "private-player" not in str(message)
+            assert token(1) not in str(message) and token(2) not in str(message)
+        await coordinator.disconnect(host)
+        await coordinator.disconnect(alice)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_room_close_after_settlement_leaves_no_timer_and_shutdown_cancels_live_timer() -> None:
+    async def scenario() -> None:
+        service, room_id, _, clock = started_timed_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        coordinator = RealtimeRoomCoordinator(service)
+        host = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        first = current_deadline(service, room_id)
+        assert room_id in coordinator._turn_tasks
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(first) is True
+        assert room_id not in coordinator._turn_tasks
+        await coordinator.handle_command(
+            host, CloseRoomCommand(type="close_room", command_id="close")
+        )
+        assert service.get_room_snapshot(room_id).status.value == "closed"
+        assert room_id not in coordinator._turn_tasks
+        await coordinator.shutdown()
+        assert coordinator._turn_tasks == {}
+
+    asyncio.run(scenario())
+
+
+def test_scheduler_wakes_and_times_out_disconnected_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        service.request_seat(room_id=room_id, actor=guests["host"], seat_index=0)
+        service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+        coordinator = RealtimeRoomCoordinator(service)
+        host = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        await coordinator.handle_command(
+            host, StartHandCommand(type="start_hand", command_id="start", hand_number=1)
+        )
+        assert room_id in coordinator._turn_tasks
+        await coordinator.disconnect(host)
+
+        async def settled() -> None:
+            while service.get_room_view(room_id=room_id, viewer=guests["host"]).active_hand:
+                await asyncio.sleep(0.005)
+
+        await asyncio.wait_for(settled(), timeout=1)
+        view = service.get_room_view(room_id=room_id, viewer=guests["host"])
+        assert view.last_hand is not None
+        assert view.last_hand.final_action_sequence == 1
+        assert room_id not in coordinator._turn_tasks
+        await coordinator.shutdown()
+
+    monkeypatch.setattr("streetpoker.application.room_service.ACTION_TIMEOUT_MS", 10)
+    asyncio.run(scenario())
+
+
+def test_action_admitted_before_expiry_wins_even_if_clock_crosses_during_dispatch() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        deadline = current_deadline(service, room_id)
+        actor_token = token(1) if deadline.actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            service.get_room_snapshot(room_id).room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        clock.monotonic_ms = deadline.monotonic_ms - 1
+        clock.advance_after_read = True
+        await coordinator.handle_command(
+            session,
+            CallCommand(
+                type="call",
+                command_id="before-expiry",
+                hand_number=deadline.hand_number,
+                expected_action_sequence=deadline.action_sequence,
+            ),
+        )
+        after = service.get_room_view(room_id=room_id, viewer=deadline.actor)
+        assert after.active_hand is not None
+        assert after.active_hand.action_sequence == 1
+        assert service.expire_turn(deadline) is False
+        await coordinator.disconnect(session)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_timer_replacement_cleanup_settlement_and_shutdown() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        first = current_deadline(service, room_id)
+        actor_token = token(1) if first.actor == guests["host"] else token(2)
+        coordinator = RealtimeRoomCoordinator(service)
+        actor_session = await coordinator.bind(
+            cast(WebSocket, RecordingWebSocket()),
+            room_code,
+            ConnectRequest(type="connect", guest_token=actor_token),
+        )
+        old_task = coordinator._turn_tasks[room_id].task
+        await coordinator.handle_command(
+            actor_session,
+            CallCommand(
+                type="call",
+                command_id="call",
+                hand_number=first.hand_number,
+                expected_action_sequence=first.action_sequence,
+            ),
+        )
+        second = current_deadline(service, room_id)
+        new_task = coordinator._turn_tasks[room_id].task
+        assert new_task is not old_task
+        await asyncio.sleep(0)
+        assert old_task.done()
+        assert await coordinator.expire_turn(first) is False
+        assert coordinator._turn_tasks[room_id].task is new_task
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(second) is True
+        assert coordinator._turn_tasks[room_id].task is not new_task
+        assert await coordinator.expire_turn(second) is False
+        assert coordinator._turn_tasks[room_id].deadline.action_sequence == 2
+        live_task = coordinator._turn_tasks[room_id].task
+        await coordinator.disconnect(actor_session)
+        await coordinator.shutdown()
+        assert coordinator._turn_tasks == {}
+        assert live_task.done()
 
     asyncio.run(scenario())

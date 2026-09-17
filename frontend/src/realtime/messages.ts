@@ -82,6 +82,7 @@ const handPhaseSchema = z.enum([
 const activeHandSchema = z.strictObject({
   hand_number: safeIntegerSchema,
   action_sequence: safeIntegerSchema,
+  action_deadline_unix_ms: safeIntegerSchema,
   phase: handPhaseSchema,
   button_seat: seatIndexSchema,
   small_blind_seat: seatIndexSchema,

@@ -1,6 +1,8 @@
 """Framework-independent room application layer."""
 
+from streetpoker.application.clock import Clock, SystemClock
 from streetpoker.application.errors import (
+    ActionDeadlineExpiredError,
     ActiveHandMutationError,
     AuthorizationError,
     CannotKickHostError,
@@ -57,6 +59,7 @@ from streetpoker.application.gameplay import (
     CompletedPotSnapshot,
     LegalActionSnapshot,
     RoomViewSnapshot,
+    TurnDeadline,
     WagerBoundsSnapshot,
     WinnerShareSnapshot,
 )
@@ -97,6 +100,7 @@ __all__ = [
     "DEFAULT_STARTING_STACK",
     "ROOM_CODE_ALPHABET",
     "ROOM_CODE_LENGTH",
+    "ActionDeadlineExpiredError",
     "ActiveHandMutationError",
     "ActiveHandPlayerSnapshot",
     "ActiveHandSnapshot",
@@ -105,6 +109,7 @@ __all__ = [
     "CannotKickHostError",
     "CannotStartHandError",
     "CardSnapshot",
+    "Clock",
     "CompletedHandPlayerSnapshot",
     "CompletedHandSnapshot",
     "CompletedPotSnapshot",
@@ -168,6 +173,8 @@ __all__ = [
     "SeatingError",
     "SecureRoomCodeSource",
     "StaleHandVersionError",
+    "SystemClock",
+    "TurnDeadline",
     "WagerBoundsSnapshot",
     "WinnerShareSnapshot",
     "WrongRoomPasswordError",

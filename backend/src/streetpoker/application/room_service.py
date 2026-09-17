@@ -8,7 +8,9 @@ from threading import RLock
 from typing import Protocol
 from uuid import uuid4
 
+from streetpoker.application.clock import Clock, SystemClock
 from streetpoker.application.errors import (
+    ActionDeadlineExpiredError,
     CannotStartHandError,
     DuplicateRoomCodeError,
     DuplicateRoomIdError,
@@ -28,6 +30,7 @@ from streetpoker.application.errors import (
 )
 from streetpoker.application.gameplay import (
     RoomViewSnapshot,
+    TurnDeadline,
     _ActiveHand,
     _HandIdentity,
     completed_hand_record,
@@ -50,6 +53,7 @@ from streetpoker.application.rooms import (
     normalize_room_code,
 )
 from streetpoker.domain import (
+    ActionKind,
     ChipStack,
     HandSettlementResult,
     HoldemHand,
@@ -68,6 +72,7 @@ PASSWORD_SALT_BYTES = 16
 MAX_PASSWORD_CHARACTERS = 128
 MAX_PASSWORD_BYTES = 256
 MAX_GENERATION_ATTEMPTS = 32
+ACTION_TIMEOUT_MS = 30_000
 
 
 class PasswordHasher(Protocol):
@@ -258,6 +263,7 @@ class RoomService:
     """Coordinates authorized room commands and exposes immutable snapshots only."""
 
     __slots__ = (
+        "_clock",
         "_code_source",
         "_password_hasher",
         "_player_id_factory",
@@ -277,6 +283,7 @@ class RoomService:
         player_id_factory: Callable[[], PlayerId] = _new_player_id,
         random_source_factory: Callable[[], RandomSource] = SecureRandomSource,
         settler: Callable[[HoldemHandSnapshot], HandSettlementResult] = settle_holdem_hand,
+        clock: Clock | None = None,
     ) -> None:
         self._repository = InMemoryRoomRepository() if repository is None else repository
         self._code_source = SecureRoomCodeSource() if code_source is None else code_source
@@ -287,6 +294,11 @@ class RoomService:
         self._player_id_factory = player_id_factory
         self._random_source_factory = random_source_factory
         self._settler = settler
+        self._clock = SystemClock() if clock is None else clock
+
+    @property
+    def clock(self) -> Clock:
+        return self._clock
 
     def create_room(
         self,
@@ -476,7 +488,47 @@ class RoomService:
         candidate.status = RoomStatus.HAND_IN_PROGRESS
         if hand.snapshot.terminal:
             self._complete_hand(candidate)
+        else:
+            self._set_turn_deadline(candidate.room_id, active)
         return self._commit_view(candidate, actor)
+
+    def current_turn_deadline(self, room_id: RoomId) -> TurnDeadline | None:
+        room = self._repository.get_by_id(room_id)
+        if room.status is RoomStatus.CLOSED or room.active_hand is None:
+            return None
+        return room.active_hand.deadline
+
+    def expire_turn(self, expected: TurnDeadline) -> bool:
+        """Apply one due timeout only when the entire turn identity still matches."""
+        current = self.current_turn_deadline(expected.room_id)
+        if current != expected or self._clock.now_monotonic_ms() < expected.monotonic_ms:
+            return False
+        room = self._repository.get_by_id(expected.room_id)
+        active = room.active_hand
+        if active is None:
+            return False
+        legal = active.hand.legal_actions()
+        current_player = active.hand.betting_round_snapshot
+        if (
+            current_player is None
+            or current_player.current_player is None
+            or active.identity_for_player(current_player.current_player).guest_id != expected.actor
+        ):
+            return False
+        operation = (
+            (lambda hand, player_id: hand.check(player_id=player_id))
+            if ActionKind.CHECK in legal.kinds
+            else (lambda hand, player_id: hand.fold(player_id=player_id))
+        )
+        self._act(
+            room_id=expected.room_id,
+            actor=expected.actor,
+            hand_number=expected.hand_number,
+            expected_action_sequence=expected.action_sequence,
+            operation=operation,
+            is_timeout=True,
+        )
+        return True
 
     def fold(
         self,
@@ -485,12 +537,14 @@ class RoomService:
         actor: GuestId,
         hand_number: int,
         expected_action_sequence: int,
+        admitted_at_monotonic_ms: int | None = None,
     ) -> RoomViewSnapshot:
         return self._act(
             room_id=room_id,
             actor=actor,
             hand_number=hand_number,
             expected_action_sequence=expected_action_sequence,
+            admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             operation=lambda hand, player_id: hand.fold(player_id=player_id),
         )
 
@@ -501,12 +555,14 @@ class RoomService:
         actor: GuestId,
         hand_number: int,
         expected_action_sequence: int,
+        admitted_at_monotonic_ms: int | None = None,
     ) -> RoomViewSnapshot:
         return self._act(
             room_id=room_id,
             actor=actor,
             hand_number=hand_number,
             expected_action_sequence=expected_action_sequence,
+            admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             operation=lambda hand, player_id: hand.check(player_id=player_id),
         )
 
@@ -517,12 +573,14 @@ class RoomService:
         actor: GuestId,
         hand_number: int,
         expected_action_sequence: int,
+        admitted_at_monotonic_ms: int | None = None,
     ) -> RoomViewSnapshot:
         return self._act(
             room_id=room_id,
             actor=actor,
             hand_number=hand_number,
             expected_action_sequence=expected_action_sequence,
+            admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             operation=lambda hand, player_id: hand.call(player_id=player_id),
         )
 
@@ -534,12 +592,14 @@ class RoomService:
         hand_number: int,
         expected_action_sequence: int,
         total: int,
+        admitted_at_monotonic_ms: int | None = None,
     ) -> RoomViewSnapshot:
         return self._act(
             room_id=room_id,
             actor=actor,
             hand_number=hand_number,
             expected_action_sequence=expected_action_sequence,
+            admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             operation=lambda hand, player_id: hand.bet_to(player_id=player_id, total=total),
         )
 
@@ -551,12 +611,14 @@ class RoomService:
         hand_number: int,
         expected_action_sequence: int,
         total: int,
+        admitted_at_monotonic_ms: int | None = None,
     ) -> RoomViewSnapshot:
         return self._act(
             room_id=room_id,
             actor=actor,
             hand_number=hand_number,
             expected_action_sequence=expected_action_sequence,
+            admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             operation=lambda hand, player_id: hand.raise_to(player_id=player_id, total=total),
         )
 
@@ -596,6 +658,8 @@ class RoomService:
         hand_number: int,
         expected_action_sequence: int,
         operation: Callable[[HoldemHand, PlayerId], object],
+        is_timeout: bool = False,
+        admitted_at_monotonic_ms: int | None = None,
     ) -> RoomViewSnapshot:
         original = self._authorized_room(room_id, actor)
         candidate = original.copy()
@@ -609,6 +673,17 @@ class RoomService:
             or expected_action_sequence != active.action_sequence
         ):
             raise StaleHandVersionError(f"Expected action sequence {active.action_sequence}.")
+        if (
+            not is_timeout
+            and active.deadline is not None
+            and (
+                self._clock.now_monotonic_ms()
+                if admitted_at_monotonic_ms is None
+                else admitted_at_monotonic_ms
+            )
+            >= active.deadline.monotonic_ms
+        ):
+            raise ActionDeadlineExpiredError("The current action deadline has expired.")
         identity = active.identity_for_guest(actor)
         if identity is None:
             raise NotHandParticipantError("The room member is not in the active hand.")
@@ -626,7 +701,23 @@ class RoomService:
         active.action_sequence += 1
         if active.hand.snapshot.terminal:
             self._complete_hand(candidate)
+        else:
+            self._set_turn_deadline(room_id, active)
         return self._commit_view(candidate, actor)
+
+    def _set_turn_deadline(self, room_id: RoomId, active: _ActiveHand) -> None:
+        round_snapshot = active.hand.betting_round_snapshot
+        assert round_snapshot is not None and round_snapshot.current_player is not None
+        previous = active.deadline
+        active.deadline = TurnDeadline(
+            room_id=room_id,
+            hand_number=active.hand_number,
+            action_sequence=active.action_sequence,
+            actor=active.identity_for_player(round_snapshot.current_player).guest_id,
+            revision=1 if previous is None else previous.revision + 1,
+            monotonic_ms=self._clock.now_monotonic_ms() + ACTION_TIMEOUT_MS,
+            unix_ms=self._clock.now_unix_ms() + ACTION_TIMEOUT_MS,
+        )
 
     def _complete_hand(self, candidate: _Room) -> None:
         active = candidate.active_hand

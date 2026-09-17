@@ -19,7 +19,7 @@ from streetpoker.domain import (
 )
 
 if TYPE_CHECKING:
-    from streetpoker.application.rooms import GuestId, RoomSnapshot
+    from streetpoker.application.rooms import GuestId, RoomId, RoomSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +69,7 @@ class ActiveHandPlayerSnapshot:
 class ActiveHandSnapshot:
     hand_number: int
     action_sequence: int
+    action_deadline_unix_ms: int
     phase: HoldemHandPhase
     button_seat: int
     small_blind_seat: int
@@ -128,6 +129,17 @@ class RoomViewSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class TurnDeadline:
+    room_id: RoomId
+    hand_number: int
+    action_sequence: int
+    actor: GuestId
+    revision: int
+    monotonic_ms: int
+    unix_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class _HandIdentity:
     guest_id: GuestId
     player_id: PlayerId
@@ -140,6 +152,7 @@ class _ActiveHand:
     action_sequence: int
     hand: HoldemHand
     identities: tuple[_HandIdentity, ...]
+    deadline: TurnDeadline | None = None
 
     def copy(self) -> _ActiveHand:
         return _ActiveHand(
@@ -147,6 +160,7 @@ class _ActiveHand:
             action_sequence=self.action_sequence,
             hand=self.hand.copy(),
             identities=self.identities,
+            deadline=self.deadline,
         )
 
     def identity_for_guest(self, guest_id: GuestId) -> _HandIdentity | None:
@@ -234,6 +248,7 @@ def _card(card: Card) -> CardSnapshot:
 
 def _active_projection(active: _ActiveHand, viewer: GuestId) -> ActiveHandSnapshot:
     snapshot = active.hand.snapshot
+    assert active.deadline is not None
     legal = active.hand.legal_actions()
     actor = active.identity_for_player(legal.player_id).guest_id
     players = tuple(
@@ -256,6 +271,7 @@ def _active_projection(active: _ActiveHand, viewer: GuestId) -> ActiveHandSnapsh
     return ActiveHandSnapshot(
         hand_number=active.hand_number,
         action_sequence=active.action_sequence,
+        action_deadline_unix_ms=active.deadline.unix_ms,
         phase=snapshot.phase,
         button_seat=snapshot.button_position.value,
         small_blind_seat=snapshot.small_blind_position.value,

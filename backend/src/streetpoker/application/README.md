@@ -93,3 +93,18 @@ and a fixed `session ended` reason. Commands from it are ignored, and its late c
 cannot remove the new binding. Leave, Kick, and Close Room still terminate membership or
 the room through their explicit commands. Replacement itself changes no room or poker
 state. Manual reconnect and the Phase 11A disconnect rules otherwise remain in effect.
+
+## Phase 11C action deadlines
+
+RoomService records a 30,000 millisecond deadline for each active turn using an injectable
+clock. Monotonic milliseconds decide expiry; a Unix millisecond timestamp is projected for
+future display. A player action arriving at or after the deadline loses to the server timeout.
+The timeout checks when check is legal and folds otherwise, through the existing hand action
+and settlement path. Reconnect and socket replacement do not change the deadline.
+
+The realtime coordinator schedules one task for each active room turn. Each callback verifies
+room, hand number, action sequence, actor, deadline revision, and actual expiry under the room
+lock. A stale callback changes nothing. Task cancellation only cleans up resources; it does
+not establish correctness. The scheduler and deadlines are process-local, so process restart
+does not recover an in-progress hand. There is no frontend countdown, timebank, or automatic
+reconnect in this phase.

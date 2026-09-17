@@ -210,6 +210,7 @@ class ActiveHandPlayerDto(_Outbound):
 class ActiveHandDto(_Outbound):
     hand_number: int
     action_sequence: int
+    action_deadline_unix_ms: int
     phase: str
     button_seat: int
     small_blind_seat: int
@@ -396,6 +397,7 @@ def _active_hand(snapshot: ActiveHandSnapshot | None) -> ActiveHandDto | None:
     return ActiveHandDto(
         hand_number=snapshot.hand_number,
         action_sequence=snapshot.action_sequence,
+        action_deadline_unix_ms=snapshot.action_deadline_unix_ms,
         phase=snapshot.phase.value,
         button_seat=snapshot.button_seat,
         small_blind_seat=snapshot.small_blind_seat,

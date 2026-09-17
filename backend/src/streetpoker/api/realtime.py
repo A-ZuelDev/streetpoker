@@ -37,6 +37,7 @@ from streetpoker.api.schemas.realtime import (
     room_view_dto,
 )
 from streetpoker.application import (
+    ActionDeadlineExpiredError,
     ActiveHandMutationError,
     CannotKickHostError,
     CannotStartHandError,
@@ -74,6 +75,7 @@ from streetpoker.application import (
     RoomStatus,
     SeatRequestNotFoundError,
     StaleHandVersionError,
+    TurnDeadline,
     WrongRoomPasswordError,
 )
 from streetpoker.application.rooms import (
@@ -132,6 +134,12 @@ class SocketSession:
     outbound: asyncio.Queue[_OutboundItem]
     writer: asyncio.Task[None] | None = None
     registered: bool = True
+
+
+@dataclass(slots=True)
+class _ScheduledTurn:
+    deadline: TurnDeadline
+    task: asyncio.Task[None]
 
 
 async def _run_serialized_in_thread[**P, T](
@@ -383,6 +391,8 @@ class RealtimeRoomCoordinator:
         self.registry = ConnectionRegistry() if registry is None else registry
         self._room_creation_lock = asyncio.Lock()
         self._room_locks: dict[RoomId, asyncio.Lock] = {}
+        self._turn_tasks: dict[RoomId, _ScheduledTurn] = {}
+        self._shutting_down = False
 
     async def create_room(
         self,
@@ -432,6 +442,8 @@ class RealtimeRoomCoordinator:
                     raise RuntimeError("Room code resolution changed unexpectedly.")
                 if current.status is RoomStatus.CLOSED:
                     raise RoomClosedError("The room is closed.")
+                if self._apply_due_turn_locked(room_id):
+                    self._broadcast_current_locked(room_id)
                 joined = False
                 try:
                     initial_view = self._room_service.get_room_view(
@@ -471,6 +483,7 @@ class RealtimeRoomCoordinator:
                     self._enqueue_states(room_id, states)
                 else:
                     self.registry.enqueue(session, initial_state)
+                self._sync_turn_task_locked(room_id)
                 return session
             except ConnectionFailure:
                 raise
@@ -489,8 +502,26 @@ class RealtimeRoomCoordinator:
         async with self._lock_for(session.room_id):
             if not self.registry.is_registered(session):
                 return
+            admitted_at_monotonic_ms: int | None = None
+            if isinstance(
+                command,
+                (FoldCommand, CheckCommand, CallCommand, BetToCommand, RaiseToCommand),
+            ):
+                admitted_at_monotonic_ms = self._room_service.clock.now_monotonic_ms()
+                deadline = self._room_service.current_turn_deadline(session.room_id)
+                if (
+                    deadline is not None
+                    and admitted_at_monotonic_ms >= deadline.monotonic_ms
+                    and self._apply_due_turn_locked(session.room_id)
+                ):
+                    self._reject_late_action_locked(session, command.command_id)
+                    return
             try:
-                await self._dispatch(session, command)
+                await self._dispatch(session, command, admitted_at_monotonic_ms)
+            except ActionDeadlineExpiredError:
+                self._apply_due_turn_locked(session.room_id)
+                self._reject_late_action_locked(session, command.command_id)
+                return
             except (RoomApplicationError, PokerDomainError) as error:
                 translated = safe_error(error)
                 if translated.code == "internal_error":
@@ -532,6 +563,7 @@ class RealtimeRoomCoordinator:
                 )
                 return
 
+            self._sync_turn_task_locked(session.room_id)
             self.registry.enqueue(session, CommandAckMessage(command_id=command.command_id))
             try:
                 states = self._viewer_states(session.room_id)
@@ -590,7 +622,82 @@ class RealtimeRoomCoordinator:
         await self.registry.disconnect(session)
 
     async def shutdown(self) -> None:
+        self._shutting_down = True
+        tasks = tuple(item.task for item in self._turn_tasks.values())
+        self._turn_tasks.clear()
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self.registry.shutdown()
+
+    def _apply_due_turn_locked(self, room_id: RoomId) -> bool:
+        deadline = self._room_service.current_turn_deadline(room_id)
+        if (
+            deadline is None
+            or self._room_service.clock.now_monotonic_ms() < deadline.monotonic_ms
+            or not self._room_service.expire_turn(deadline)
+        ):
+            return False
+        self._sync_turn_task_locked(room_id)
+        return True
+
+    def _reject_late_action_locked(self, session: SocketSession, command_id: str) -> None:
+        self.registry.enqueue(
+            session,
+            CommandErrorMessage(
+                command_id=command_id,
+                code="stale_game_state",
+                message="The command used an outdated hand state.",
+            ),
+        )
+        self._broadcast_current_locked(session.room_id)
+
+    def _broadcast_current_locked(self, room_id: RoomId) -> None:
+        try:
+            self._enqueue_states(room_id, self._viewer_states(room_id))
+        except Exception:
+            logger.error("Realtime state projection failed after a timeout")
+            self.registry.detach_room(room_id, code=1011, reason="state synchronization failed")
+
+    def _sync_turn_task_locked(self, room_id: RoomId) -> None:
+        deadline = self._room_service.current_turn_deadline(room_id)
+        current = self._turn_tasks.get(room_id)
+        if current is not None and current.deadline == deadline:
+            return
+        if current is not None:
+            self._turn_tasks.pop(room_id)
+            if current.task is not asyncio.current_task():
+                current.task.cancel()
+        if deadline is not None and not self._shutting_down:
+            task = asyncio.create_task(self._run_turn_timer(deadline))
+            self._turn_tasks[room_id] = _ScheduledTurn(deadline, task)
+
+    async def _run_turn_timer(self, deadline: TurnDeadline) -> None:
+        try:
+            while True:
+                remaining = deadline.monotonic_ms - self._room_service.clock.now_monotonic_ms()
+                if remaining <= 0:
+                    await self.expire_turn(deadline)
+                    return
+                await asyncio.sleep(remaining / 1_000)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.error("Realtime action timeout failed")
+        finally:
+            current = self._turn_tasks.get(deadline.room_id)
+            if current is not None and current.task is asyncio.current_task():
+                self._turn_tasks.pop(deadline.room_id)
+
+    async def expire_turn(self, deadline: TurnDeadline) -> bool:
+        """Validate a scheduled callback against current application state under the room lock."""
+        async with self._lock_for(deadline.room_id):
+            if self._shutting_down or not self._room_service.expire_turn(deadline):
+                return False
+            self._sync_turn_task_locked(deadline.room_id)
+            self._broadcast_current_locked(deadline.room_id)
+            return True
 
     def _lock_for(self, room_id: RoomId) -> asyncio.Lock:
         lock = self._room_locks.get(room_id)
@@ -629,7 +736,12 @@ class RealtimeRoomCoordinator:
             return
         self.registry.enqueue(session, StateMessage(snapshot=room_view_dto(view)))
 
-    async def _dispatch(self, session: SocketSession, command: ClientCommand) -> None:
+    async def _dispatch(
+        self,
+        session: SocketSession,
+        command: ClientCommand,
+        admitted_at_monotonic_ms: int | None = None,
+    ) -> None:
         if isinstance(command, StartHandCommand):
             self._room_service.start_hand(
                 room_id=session.room_id,
@@ -642,6 +754,7 @@ class RealtimeRoomCoordinator:
                 actor=session.guest_id,
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, CheckCommand):
             self._room_service.check(
@@ -649,6 +762,7 @@ class RealtimeRoomCoordinator:
                 actor=session.guest_id,
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, CallCommand):
             self._room_service.call(
@@ -656,6 +770,7 @@ class RealtimeRoomCoordinator:
                 actor=session.guest_id,
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, BetToCommand):
             self._room_service.bet_to(
@@ -664,6 +779,7 @@ class RealtimeRoomCoordinator:
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
                 total=command.total,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, RaiseToCommand):
             self._room_service.raise_to(
@@ -672,6 +788,7 @@ class RealtimeRoomCoordinator:
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
                 total=command.total,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, RequestSeatCommand):
             self._room_service.request_seat(
