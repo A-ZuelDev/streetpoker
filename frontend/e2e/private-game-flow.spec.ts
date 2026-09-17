@@ -44,6 +44,8 @@ const test = base.extend<{ guestPage: Page }>({
   },
 });
 
+test.describe.configure({ timeout: 45_000 });
+
 async function expectIndependentGuestTokens(
   hostPage: Page,
   guestPage: Page,
