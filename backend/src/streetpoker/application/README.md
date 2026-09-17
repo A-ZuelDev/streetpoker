@@ -68,3 +68,18 @@ settlement, validation, and replace boundary. Phase 9B wraps that application tr
 process-local per-room async serializer shared by all transports. A future
 multi-process deployment will require a different repository/concurrency design; no distributed
 locks, Redis, or persistence are included here.
+
+## Phase 11A transport disconnect and reconnect
+
+Closing or losing a WebSocket removes only its connection-registry entry. It does not call Leave,
+stand a player, remove membership or a seat, change a stack or host authority, or mutate an active
+hand. The same guest token can bind again to the existing membership and receives a new projection
+for that viewer. Leave, Kick, and Close Room remain explicit terminal room mutations with their
+existing authorization rules. A guest who left or was kicked needs a new join; a closed room cannot
+be rejoined. Multiple sockets for one guest remain permitted in 11A, and each receives that guest's
+viewer-specific state. Socket replacement belongs to 11B.
+
+There is no disconnect grace period or automatic standing in 11A. A disconnected seated player
+remains eligible under the existing start-hand rules. An offline current actor can stall an active
+hand because action deadlines and timeout actions belong to 11C. Reconnect is manual, and commands
+are not replayed automatically.
