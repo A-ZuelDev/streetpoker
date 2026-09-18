@@ -146,3 +146,24 @@ If a host approves a pending seat request after its member has disconnected, gra
 the offline member becomes seated, so that seat cannot remain occupied indefinitely.
 Grace state and tasks exist only in this process; a restart does not recover them. Reconnect is
 still manual, and no grace or scheduler identifiers appear in the wire projection.
+
+## Phase 12C private Stand-Up lifecycle
+
+An optional room-owned Stand-Up round starts from the PlayerIds and seats of the poker hand that
+begins it. For this application-only phase, room creation accepts an internal chip penalty; no
+RoomSettings or wire field exposes it. The round freezes that penalty and its cohort. Later poker
+players may join the hand without joining the active side-game round.
+
+After authoritative Hold'em settlement, RoomService writes poker final stacks to its copied
+candidate table. It adapts the validated pot-index-zero award to the pure Stand-Up hand outcome,
+then advances the round using the candidate table's settled cohort stacks. A squid resolution
+produces a capped transfer plan, which is checked and applied only to that candidate. The
+completed-hand record remains poker-only; the private Stand-Up result separately explains any
+additional stack transfers. Validation, viewer projection, and repository replacement follow the
+entire transaction, so a failure commits neither poker settlement nor side-game payment.
+
+An unresolved round cancels when a cohort member leaves, is kicked, vacates a poker seat, busts
+at settlement, or the room closes. Transport disconnect alone has no side-game effect. Grace
+cleanup uses the existing stand-up operation after hand settlement, so a completed side-game
+resolution precedes any deferred seat cleanup. A new round can begin only when a later poker
+hand starts. Phase 12D will define host-facing settings and safe projection of side-game state.

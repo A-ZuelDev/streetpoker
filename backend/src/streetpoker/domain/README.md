@@ -132,3 +132,6 @@ duplicate, stale, or skipped outcomes raise typed errors against the updated rou
 Cancellation returns a terminal result with a
 finite reason and no transfers. The state machine never mutates table stacks; room
 lifecycle integration, eligibility cancellation, and transfers belong to Phase 12C.
+The application may pass settled cohort stacks as a mapping; the domain selects the
+remaining at-risk player's stack only if the hand resolves, so application code never
+duplicates the qualification rule.

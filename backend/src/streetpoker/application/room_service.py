@@ -65,6 +65,11 @@ from streetpoker.domain import (
     RandomSource,
     SeatIndex,
     SecureRandomSource,
+    StandUpCancelReason,
+    StandUpHandOutcome,
+    StandUpParticipant,
+    StandUpResolution,
+    StandUpRound,
     settle_holdem_hand,
 )
 
@@ -309,6 +314,7 @@ class RoomService:
         nickname: str,
         settings: RoomSettings,
         password: str | None = None,
+        stand_up_penalty_per_recipient_chips: int | None = None,
     ) -> RoomSnapshot:
         password_record = (
             None if password is None else self._password_hasher.hash_password(password)
@@ -322,6 +328,7 @@ class RoomService:
                 password_record=password_record,
                 host_player_id=self._player_id_factory(),
                 host_nickname=nickname,
+                stand_up_penalty_per_recipient_chips=stand_up_penalty_per_recipient_chips,
             )
             snapshot = room.snapshot()
             try:
@@ -491,6 +498,18 @@ class RoomService:
             identities,
             {identity.player_id: PER_HAND_TIMEBANK_MS for identity in identities},
         )
+        if (
+            candidate.stand_up_round is None
+            and candidate.stand_up_penalty_per_recipient_chips is not None
+        ):
+            candidate.stand_up_round = StandUpRound.start(
+                start_hand_number=expected_hand_number,
+                participants=(
+                    StandUpParticipant(participant.player_id, participant.seat_index)
+                    for participant in hand.snapshot.participants
+                ),
+                penalty_per_recipient_chips=candidate.stand_up_penalty_per_recipient_chips,
+            )
         candidate.active_hand = active
         candidate.next_hand_number += 1
         candidate.status = RoomStatus.HAND_IN_PROGRESS
@@ -793,9 +812,123 @@ class RoomService:
                     else ParticipationStatus.SITTING_OUT
                 ),
             )
+        self._settle_stand_up(candidate, active, settlement)
         candidate.last_hand = completed
         candidate.active_hand = None
         candidate.status = RoomStatus.OPEN
+
+    @staticmethod
+    def _stand_up_outcome(
+        active: _ActiveHand, settlement: HandSettlementResult
+    ) -> StandUpHandOutcome:
+        if not settlement.pot_awards or settlement.pot_awards[0].pot_index != 0:
+            raise GameplaySettlementError("Stand-Up requires the validated main-pot award.")
+        main_pot = settlement.pot_awards[0]
+        button = active.hand.snapshot.button_position
+        if main_pot.button_position != button:
+            raise GameplaySettlementError("Main-pot button disagrees with the completed hand.")
+        return StandUpHandOutcome(
+            hand_number=active.hand_number,
+            participants=tuple(item.player_id for item in settlement.player_settlements),
+            main_pot_winners=main_pot.winners,
+            button_seat=button,
+        )
+
+    def _settle_stand_up(
+        self, candidate: _Room, active: _ActiveHand, settlement: HandSettlementResult
+    ) -> None:
+        round_state = candidate.stand_up_round
+        if round_state is None:
+            return
+        outcome = self._stand_up_outcome(active, settlement)
+        settled_stacks: dict[PlayerId, int] = {}
+        for participant in round_state.participants:
+            seat = candidate.table.seat_at(participant.seat_index)
+            if seat.occupant is None or seat.occupant.player_id != participant.player_id:
+                raise GameplaySettlementError("Stand-Up cohort seat changed during settlement.")
+            settled_stacks[participant.player_id] = seat.occupant.stack.chips
+        if any(chips == 0 for chips in settled_stacks.values()):
+            candidate.last_stand_up_result = round_state.cancel(
+                StandUpCancelReason.PARTICIPANT_BUSTED
+            )
+            candidate.stand_up_round = None
+            return
+        transition = round_state.apply_hand(outcome, settled_stacks_by_player=settled_stacks)
+        if isinstance(transition, StandUpRound):
+            candidate.stand_up_round = transition
+            return
+        if (
+            transition.participants != round_state.participants
+            or transition.start_hand_number != round_state.start_hand_number
+            or transition.hand_number != active.hand_number
+            or transition.penalty_per_recipient_chips != round_state.penalty_per_recipient_chips
+            or transition.button_seat != outcome.button_seat
+        ):
+            raise GameplaySettlementError("Stand-Up resolution disagrees with its active round.")
+        self._apply_stand_up_transfers(candidate, transition)
+        candidate.stand_up_round = None
+        candidate.last_stand_up_result = transition
+
+    @staticmethod
+    def _apply_stand_up_transfers(candidate: _Room, resolution: StandUpResolution) -> None:
+        seats = {item.player_id: item.seat_index for item in resolution.participants}
+        stacks: dict[PlayerId, int] = {}
+        for player_id, seat_index in seats.items():
+            occupant = candidate.table.seat_at(seat_index).occupant
+            if occupant is None or occupant.player_id != player_id:
+                raise GameplaySettlementError(
+                    "Stand-Up transfer recipient no longer owns the seat."
+                )
+            stacks[player_id] = occupant.stack.chips
+        if stacks[resolution.squid] != resolution.squid_available_stack:
+            raise GameplaySettlementError("The squid stack changed before side-game transfer.")
+        total_before = sum(
+            seat.occupant.stack.chips for seat in candidate.table.seats if seat.occupant is not None
+        )
+        recipients: set[PlayerId] = set()
+        transferred = 0
+        for transfer in resolution.transfers:
+            if (
+                transfer.from_player_id != resolution.squid
+                or transfer.to_player_id not in seats
+                or transfer.to_player_id == resolution.squid
+                or transfer.to_player_id in recipients
+                or transfer.chips <= 0
+                or transfer.chips > resolution.penalty_per_recipient_chips
+            ):
+                raise GameplaySettlementError("Stand-Up transfer identities or chips are invalid.")
+            recipients.add(transfer.to_player_id)
+            transferred += transfer.chips
+            stacks[resolution.squid] -= transfer.chips
+            stacks[transfer.to_player_id] += transfer.chips
+            if stacks[resolution.squid] < 0:
+                raise GameplaySettlementError(
+                    "Stand-Up transfer exceeds the squid's settled stack."
+                )
+        if transferred != resolution.actual_total or transferred > resolution.intended_total:
+            raise GameplaySettlementError("Stand-Up transfers do not match the resolution total.")
+        for player_id, seat_index in seats.items():
+            seat = candidate.table.seat_at(seat_index)
+            occupant = seat.occupant
+            assert occupant is not None
+            if occupant.stack.chips == stacks[player_id]:
+                continue
+            candidate.table.leave_seat(player_id=player_id)
+            candidate.table.seat_player(
+                seat_index=seat_index,
+                player_id=player_id,
+                stack=ChipStack(stacks[player_id]),
+                status=(
+                    ParticipationStatus.SITTING_IN
+                    if stacks[player_id] > 0
+                    else ParticipationStatus.SITTING_OUT
+                ),
+            )
+        total_after = sum(
+            seat.occupant.stack.chips for seat in candidate.table.seats if seat.occupant is not None
+        )
+        if total_after != total_before:
+            raise GameplaySettlementError("Stand-Up transfers must conserve table chips.")
 
     def _commit_view(self, candidate: _Room, viewer: GuestId) -> RoomViewSnapshot:
         candidate.validate()

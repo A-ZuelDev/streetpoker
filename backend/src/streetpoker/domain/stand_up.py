@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Self
@@ -273,6 +273,7 @@ class StandUpRound:
         outcome: StandUpHandOutcome,
         *,
         squid_available_stack: int | None = None,
+        settled_stacks_by_player: Mapping[PlayerId, int] | None = None,
     ) -> StandUpRound | StandUpResolution:
         if not isinstance(outcome, StandUpHandOutcome):
             raise InvalidStandUpOutcomeError("A round requires a completed-hand outcome.")
@@ -284,6 +285,22 @@ class StandUpRound:
             raise InvalidStandUpOutcomeError("The completed hand omits a frozen participant.")
         if squid_available_stack is not None and not _strict_int(squid_available_stack, minimum=0):
             raise InvalidStandUpOutcomeError("The squid stack must be nonnegative whole chips.")
+        if squid_available_stack is not None and settled_stacks_by_player is not None:
+            raise InvalidStandUpOutcomeError("Supply one authoritative stack source.")
+        if settled_stacks_by_player is not None:
+            try:
+                settled_stacks_by_player = dict(settled_stacks_by_player)
+            except TypeError, ValueError:
+                raise InvalidStandUpOutcomeError(
+                    "Settled stacks must map players to chips."
+                ) from None
+            if not {item.player_id for item in self.participants} <= set(settled_stacks_by_player):
+                raise InvalidStandUpOutcomeError("Settled stacks must cover the frozen cohort.")
+            if any(
+                not isinstance(player_id, PlayerId) or not _strict_int(chips, minimum=0)
+                for player_id, chips in settled_stacks_by_player.items()
+            ):
+                raise InvalidStandUpOutcomeError("Settled stacks require valid players and chips.")
         cleared = self.cleared_player_ids
         if len(outcome.main_pot_winners) == 1:
             winner = outcome.main_pot_winners[0]
@@ -298,9 +315,11 @@ class StandUpRound:
             )
         if len(remaining) != 1:
             raise InvalidStandUpStateError("A valid hand cannot clear every at-risk player.")
+        squid = next(iter(remaining))
+        if settled_stacks_by_player is not None:
+            squid_available_stack = settled_stacks_by_player[squid]
         if squid_available_stack is None:
             raise InvalidStandUpOutcomeError("A resolving hand requires the squid's settled stack.")
-        squid = next(iter(remaining))
         participants = self.participants
         transfers = _planned_transfers(
             participants,

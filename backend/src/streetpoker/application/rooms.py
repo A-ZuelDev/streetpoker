@@ -42,6 +42,10 @@ from streetpoker.domain import (
     SeatIndex,
     SeatOccupiedError,
     SeatOutOfRangeError,
+    StandUpCancellation,
+    StandUpCancelReason,
+    StandUpResolution,
+    StandUpRound,
     TableState,
 )
 
@@ -303,6 +307,7 @@ class _Room:
         "active_hand",
         "host_guest_id",
         "last_hand",
+        "last_stand_up_result",
         "members",
         "next_hand_number",
         "next_join_order",
@@ -311,6 +316,8 @@ class _Room:
         "room_id",
         "seat_requests",
         "settings",
+        "stand_up_penalty_per_recipient_chips",
+        "stand_up_round",
         "status",
         "table",
     )
@@ -325,6 +332,7 @@ class _Room:
         password_record: _PasswordRecord | None,
         host_player_id: PlayerId,
         host_nickname: str,
+        stand_up_penalty_per_recipient_chips: int | None = None,
     ) -> None:
         normalized_nickname = normalize_nickname(host_nickname)
         self.room_id = room_id
@@ -336,6 +344,9 @@ class _Room:
         self.table = TableState.six_max()
         self.active_hand: _ActiveHand | None = None
         self.last_hand: _CompletedHandRecord | None = None
+        self.stand_up_penalty_per_recipient_chips = stand_up_penalty_per_recipient_chips
+        self.stand_up_round: StandUpRound | None = None
+        self.last_stand_up_result: StandUpResolution | StandUpCancellation | None = None
         self.next_hand_number = 1
         self.members = {
             host_guest_id: _RoomMember(
@@ -363,6 +374,9 @@ class _Room:
         candidate.status = self.status
         candidate.active_hand = None if self.active_hand is None else self.active_hand.copy()
         candidate.last_hand = self.last_hand
+        candidate.stand_up_penalty_per_recipient_chips = self.stand_up_penalty_per_recipient_chips
+        candidate.stand_up_round = self.stand_up_round
+        candidate.last_stand_up_result = self.last_stand_up_result
         candidate.next_hand_number = self.next_hand_number
         candidate.members = dict(self.members)
         candidate.seat_requests = dict(self.seat_requests)
@@ -460,6 +474,7 @@ class _Room:
         if self.status is RoomStatus.HAND_IN_PROGRESS:
             raise ActiveHandMutationError(operation="stand up")
         removed = self._leave_table(member)
+        self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_VACATED_SEAT)
         self.members[actor] = replace(
             member,
             status=RoomMemberStatus.IN_ROOM,
@@ -477,6 +492,7 @@ class _Room:
             self._leave_table(member)
         self.seat_requests.pop(actor, None)
         self.members.pop(actor)
+        self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_LEFT)
 
     def kick(self, *, target: GuestId) -> None:
         self.require_not_closed()
@@ -492,6 +508,7 @@ class _Room:
             self._leave_table(member)
         self.seat_requests.pop(target, None)
         self.members.pop(target)
+        self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_KICKED)
 
     def update_settings(
         self,
@@ -516,7 +533,18 @@ class _Room:
         if self.status is RoomStatus.HAND_IN_PROGRESS:
             raise ActiveHandMutationError(operation="close the room")
         self.seat_requests.clear()
+        if self.stand_up_round is not None:
+            self.last_stand_up_result = self.stand_up_round.cancel(StandUpCancelReason.ROOM_CLOSED)
+            self.stand_up_round = None
         self.status = RoomStatus.CLOSED
+
+    def cancel_stand_up_for(self, player_id: PlayerId, reason: StandUpCancelReason) -> None:
+        round_state = self.stand_up_round
+        if round_state is not None and any(
+            participant.player_id == player_id for participant in round_state.participants
+        ):
+            self.last_stand_up_result = round_state.cancel(reason)
+            self.stand_up_round = None
 
     def snapshot(self) -> RoomSnapshot:
         player_to_member = {member.player_id: member for member in self.members.values()}
@@ -696,6 +724,59 @@ class _Room:
         if self.status is RoomStatus.CLOSED and self.seat_requests:
             raise InvalidRoomStateError("Closed rooms cannot retain pending seat requests.")
         self._validate_gameplay_state(member_by_player, table_by_player)
+        self._validate_stand_up_state(member_by_player, table_by_player)
+
+    def _validate_stand_up_state(
+        self,
+        member_by_player: dict[PlayerId, _RoomMember],
+        table_by_player: dict[PlayerId, Seat],
+    ) -> None:
+        penalty = self.stand_up_penalty_per_recipient_chips
+        if penalty is not None and not _strict_positive_int(penalty):
+            raise InvalidRoomStateError("Stand-Up penalty must be positive whole chips.")
+        result = self.last_stand_up_result
+        if result is not None and not isinstance(result, StandUpResolution | StandUpCancellation):
+            raise InvalidRoomStateError("The last Stand-Up result must be terminal and immutable.")
+        if result is not None:
+            result_hand = (
+                result.hand_number
+                if isinstance(result, StandUpResolution)
+                else result.last_processed_hand_number
+            )
+            if result_hand >= self.next_hand_number:
+                raise InvalidRoomStateError("A Stand-Up result cannot refer to a future hand.")
+        round_state = self.stand_up_round
+        if round_state is None:
+            return
+        if not isinstance(round_state, StandUpRound) or penalty is None:
+            raise InvalidRoomStateError("An active Stand-Up round requires enabled room rules.")
+        if self.status is RoomStatus.CLOSED or round_state.penalty_per_recipient_chips != penalty:
+            raise InvalidRoomStateError("An active Stand-Up round has inconsistent room rules.")
+        if result is not None and result_hand >= round_state.start_hand_number:
+            raise InvalidRoomStateError("A previous Stand-Up result must precede the active round.")
+        expected_processed = (
+            self.next_hand_number - 2 if self.active_hand is not None else self.next_hand_number - 1
+        )
+        if round_state.last_processed_hand_number != expected_processed:
+            raise InvalidRoomStateError("The Stand-Up round is out of step with poker hands.")
+        hand_ids = (
+            None
+            if self.active_hand is None
+            else {item.player_id for item in self.active_hand.hand.snapshot.participants}
+        )
+        for participant in round_state.participants:
+            member = member_by_player.get(participant.player_id)
+            seat = table_by_player.get(participant.player_id)
+            if (
+                member is None
+                or member.status is not RoomMemberStatus.SEATED
+                or seat is None
+                or seat.index != participant.seat_index
+                or seat.occupant is None
+                or seat.occupant.stack.chips == 0
+                or (hand_ids is not None and participant.player_id not in hand_ids)
+            ):
+                raise InvalidRoomStateError("Stand-Up cohort members must retain eligible seats.")
 
     def _validate_gameplay_state(
         self,

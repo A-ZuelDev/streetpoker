@@ -277,6 +277,34 @@ def test_resolving_hand_requires_valid_settled_squid_stack() -> None:
     assert active.at_risk_player_ids == {player("A"), player("B")}
 
 
+def test_domain_selects_squid_stack_from_settled_cohort_mapping() -> None:
+    active = round_for(("A", 0), ("B", 2), penalty=9)
+    settled_stacks = {player("A"): 100, player("B"): 4}
+    resolved = active.apply_hand(
+        outcome(10, ("A", "B"), ("A",)),
+        settled_stacks_by_player=settled_stacks,
+    )
+    settled_stacks.clear()
+    assert isinstance(resolved, StandUpResolution)
+    assert resolved.squid == player("B")
+    assert resolved.squid_available_stack == 4
+    assert resolved.transfers == (StandUpTransfer(player("B"), player("A"), 4),)
+
+
+def test_settled_stack_mapping_requires_valid_cohort_values() -> None:
+    active = round_for(("A", 0), ("B", 2))
+    hand = outcome(10, ("A", "B"), ("A",))
+    for stacks in ({player("A"): 5}, {player("A"): 5, player("B"): True}):
+        with pytest.raises(InvalidStandUpOutcomeError):
+            active.apply_hand(hand, settled_stacks_by_player=stacks)
+    with pytest.raises(InvalidStandUpOutcomeError):
+        active.apply_hand(
+            hand,
+            squid_available_stack=5,
+            settled_stacks_by_player={player("A"): 5, player("B"): 5},
+        )
+
+
 @pytest.mark.parametrize("bad", [0, -1, True, 1.5, "10"])
 def test_invalid_start_hand_number_and_penalty_rejected(bad: object) -> None:
     participants = cohort(("A", 0), ("B", 2))
