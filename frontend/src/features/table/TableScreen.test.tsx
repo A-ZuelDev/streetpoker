@@ -119,6 +119,56 @@ describe('TableScreen', () => {
     }
   });
 
+  it('shows timebank only after an authoritative fresh state activates it', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_799_999_970_000);
+    try {
+      const base = activeRoomSnapshot();
+      const view = render(
+        <TableScreen
+          table={roomSnapshotToTableView(base, 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(screen.getByRole('timer')).toHaveTextContent('0s');
+      expect(screen.getByRole('timer')).toHaveTextContent(
+        'Awaiting table update',
+      );
+      expect(screen.queryByText('Timebank')).toBeNull();
+
+      const extended = structuredClone(base);
+      extended.active_hand!.action_sequence += 1;
+      extended.active_hand!.action_deadline_unix_ms += 60_000;
+      extended.active_hand!.current_actor_timebank_ms = 0;
+      extended.active_hand!.current_actor_using_timebank = true;
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(extended, 'guest_host', 'syncing')}
+          connectionStatus="syncing"
+        />,
+      );
+      expect(screen.queryByRole('timer')).toBeNull();
+      expect(screen.queryByText('Timebank')).toBeNull();
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(extended, 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      expect(
+        screen.getByRole('timer', {
+          name: 'Approximate timebank time remaining',
+        }),
+      ).toHaveTextContent('60s');
+      expect(screen.getByText('Timebank')).toBeInTheDocument();
+      view.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses coherent contribution, call, and wager totals in the active demo', () => {
     const hero = activeDemoTable.seats.find(
       (seat) => seat.kind === 'occupied' && seat.isHero,

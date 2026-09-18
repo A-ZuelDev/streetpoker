@@ -70,6 +70,8 @@ class ActiveHandSnapshot:
     hand_number: int
     action_sequence: int
     action_deadline_unix_ms: int
+    current_actor_timebank_ms: int
+    current_actor_using_timebank: bool
     phase: HoldemHandPhase
     button_seat: int
     small_blind_seat: int
@@ -152,7 +154,9 @@ class _ActiveHand:
     action_sequence: int
     hand: HoldemHand
     identities: tuple[_HandIdentity, ...]
+    timebank_remaining_ms: dict[PlayerId, int]
     deadline: TurnDeadline | None = None
+    using_timebank: bool = False
 
     def copy(self) -> _ActiveHand:
         return _ActiveHand(
@@ -160,7 +164,9 @@ class _ActiveHand:
             action_sequence=self.action_sequence,
             hand=self.hand.copy(),
             identities=self.identities,
+            timebank_remaining_ms=self.timebank_remaining_ms.copy(),
             deadline=self.deadline,
+            using_timebank=self.using_timebank,
         )
 
     def identity_for_guest(self, guest_id: GuestId) -> _HandIdentity | None:
@@ -272,6 +278,8 @@ def _active_projection(active: _ActiveHand, viewer: GuestId) -> ActiveHandSnapsh
         hand_number=active.hand_number,
         action_sequence=active.action_sequence,
         action_deadline_unix_ms=active.deadline.unix_ms,
+        current_actor_timebank_ms=active.timebank_remaining_ms[legal.player_id],
+        current_actor_using_timebank=active.using_timebank,
         phase=snapshot.phase,
         button_seat=snapshot.button_position.value,
         small_blind_seat=snapshot.small_blind_position.value,

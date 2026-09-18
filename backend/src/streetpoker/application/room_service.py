@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import secrets
 from collections.abc import Callable
+from dataclasses import replace
 from threading import RLock
 from typing import Protocol
 from uuid import uuid4
@@ -72,7 +73,8 @@ PASSWORD_SALT_BYTES = 16
 MAX_PASSWORD_CHARACTERS = 128
 MAX_PASSWORD_BYTES = 256
 MAX_GENERATION_ATTEMPTS = 32
-ACTION_TIMEOUT_MS = 30_000
+BASE_ACTION_TIME_MS = 30_000
+PER_HAND_TIMEBANK_MS = 60_000
 
 
 class PasswordHasher(Protocol):
@@ -482,7 +484,13 @@ class RoomService:
             )
             for participant in hand.snapshot.participants
         )
-        active = _ActiveHand(expected_hand_number, 0, hand, identities)
+        active = _ActiveHand(
+            expected_hand_number,
+            0,
+            hand,
+            identities,
+            {identity.player_id: PER_HAND_TIMEBANK_MS for identity in identities},
+        )
         candidate.active_hand = active
         candidate.next_hand_number += 1
         candidate.status = RoomStatus.HAND_IN_PROGRESS
@@ -499,7 +507,7 @@ class RoomService:
         return room.active_hand.deadline
 
     def expire_turn(self, expected: TurnDeadline) -> bool:
-        """Apply one due timeout only when the entire turn identity still matches."""
+        """Extend or time out one due turn only when its full identity matches."""
         current = self.current_turn_deadline(expected.room_id)
         if current != expected or self._clock.now_monotonic_ms() < expected.monotonic_ms:
             return False
@@ -515,6 +523,26 @@ class RoomService:
             or active.identity_for_player(current_player.current_player).guest_id != expected.actor
         ):
             return False
+        player_id = current_player.current_player
+        remaining = active.timebank_remaining_ms[player_id]
+        if remaining > 0:
+            candidate = room.copy()
+            extending = candidate.active_hand
+            assert extending is not None
+            extending.timebank_remaining_ms[player_id] = 0
+            extending.using_timebank = True
+            # Advance the command CAS version so a command sent for the base
+            # deadline cannot be admitted after this authoritative transition.
+            extending.action_sequence += 1
+            extending.deadline = replace(
+                expected,
+                action_sequence=extending.action_sequence,
+                revision=expected.revision + 1,
+                monotonic_ms=expected.monotonic_ms + remaining,
+                unix_ms=expected.unix_ms + remaining,
+            )
+            self._commit_view(candidate, expected.actor)
+            return True
         operation = (
             (lambda hand, player_id: hand.check(player_id=player_id))
             if ActionKind.CHECK in legal.kinds
@@ -709,14 +737,15 @@ class RoomService:
         round_snapshot = active.hand.betting_round_snapshot
         assert round_snapshot is not None and round_snapshot.current_player is not None
         previous = active.deadline
+        active.using_timebank = False
         active.deadline = TurnDeadline(
             room_id=room_id,
             hand_number=active.hand_number,
             action_sequence=active.action_sequence,
             actor=active.identity_for_player(round_snapshot.current_player).guest_id,
             revision=1 if previous is None else previous.revision + 1,
-            monotonic_ms=self._clock.now_monotonic_ms() + ACTION_TIMEOUT_MS,
-            unix_ms=self._clock.now_unix_ms() + ACTION_TIMEOUT_MS,
+            monotonic_ms=self._clock.now_monotonic_ms() + BASE_ACTION_TIME_MS,
+            unix_ms=self._clock.now_unix_ms() + BASE_ACTION_TIME_MS,
         )
 
     def _complete_hand(self, candidate: _Room) -> None:

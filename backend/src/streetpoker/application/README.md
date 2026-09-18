@@ -108,3 +108,22 @@ lock. A stale callback changes nothing. Task cancellation only cleans up resourc
 not establish correctness. The scheduler and deadlines are process-local, so process restart
 does not recover an in-progress hand. There is no frontend countdown, timebank, or automatic
 reconnect in this phase.
+
+## Phase 11E automatic per-hand timebank
+
+Each hand gives each participant 60,000 milliseconds of process-local timebank. An early
+action keeps that balance for later turns in the same hand. At the 30,000 millisecond base
+deadline, RoomService consumes the actor's full remaining balance and commits an extended
+deadline measured from the original deadline. This transition advances the action sequence
+used for command stale-state protection, so a command sent for the base deadline cannot act
+under the extended deadline. A fresh state lets the player act during the extension. An
+action does not refund consumed timebank. When no balance remains, deadline expiry checks
+or folds through the existing action path. Settlement discards the per-hand balances, and
+the next hand creates fresh balances for its participants.
+
+The coordinator resolves all due transitions under its room lock before admitting a late
+command or sending reconnect state. Old timer tasks are cancelled for cleanup; deadline
+identity and the application balance decide correctness. Viewer snapshots include only the
+current actor's remaining milliseconds and whether that actor is using timebank. The browser
+uses those fields and the projected Unix deadline for display only. Reconnect and socket
+replacement do not replenish a balance or extend a deadline.

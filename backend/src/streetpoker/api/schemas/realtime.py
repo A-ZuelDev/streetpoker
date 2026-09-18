@@ -211,6 +211,8 @@ class ActiveHandDto(_Outbound):
     hand_number: int
     action_sequence: int
     action_deadline_unix_ms: int
+    current_actor_timebank_ms: NonNegativeInt
+    current_actor_using_timebank: bool
     phase: str
     button_seat: int
     small_blind_seat: int
@@ -398,6 +400,8 @@ def _active_hand(snapshot: ActiveHandSnapshot | None) -> ActiveHandDto | None:
         hand_number=snapshot.hand_number,
         action_sequence=snapshot.action_sequence,
         action_deadline_unix_ms=snapshot.action_deadline_unix_ms,
+        current_actor_timebank_ms=snapshot.current_actor_timebank_ms,
+        current_actor_using_timebank=snapshot.current_actor_using_timebank,
         phase=snapshot.phase.value,
         button_seat=snapshot.button_seat,
         small_blind_seat=snapshot.small_blind_seat,

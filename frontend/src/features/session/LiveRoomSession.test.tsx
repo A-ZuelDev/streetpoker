@@ -277,8 +277,18 @@ describe('LiveRoomSession', () => {
     expect(screen.queryByRole('timer')).toBeNull();
     expect(screen.getByText('Waiting for fresh state')).toBeInTheDocument();
 
-    second.serverMessage({ type: 'state', snapshot });
-    expect(await screen.findByRole('timer')).toBeInTheDocument();
+    const extended = structuredClone(snapshot);
+    extended.active_hand!.action_sequence += 1;
+    extended.active_hand!.action_deadline_unix_ms += 60_000;
+    extended.active_hand!.current_actor_timebank_ms = 0;
+    extended.active_hand!.current_actor_using_timebank = true;
+    second.serverMessage({ type: 'state', snapshot: extended });
+    expect(
+      await screen.findByRole('timer', {
+        name: 'Approximate timebank time remaining',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Timebank')).toBeInTheDocument();
     expect(screen.queryByText('Waiting for fresh state')).toBeNull();
     expect(second.sent).toHaveLength(1);
   });

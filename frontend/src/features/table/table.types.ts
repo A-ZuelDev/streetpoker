@@ -200,6 +200,8 @@ export interface TableView {
   isHost: boolean;
   street: string;
   actionDeadlineUnixMs: number | null;
+  currentActorTimebankMs: number | null;
+  currentActorUsingTimebank: boolean;
   pot: number;
   board: readonly CardView[];
   seats: readonly SeatView[];

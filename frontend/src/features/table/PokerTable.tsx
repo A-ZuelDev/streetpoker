@@ -77,6 +77,7 @@ export function PokerTable({ table, isFresh, onRequestSeat }: PokerTableProps) {
                 <TurnCountdown
                   key={table.actionDeadlineUnixMs}
                   deadlineUnixMs={table.actionDeadlineUnixMs}
+                  usingTimebank={table.currentActorUsingTimebank}
                 />
               ) : (
                 <div className="turn-countdown turn-countdown--stale">

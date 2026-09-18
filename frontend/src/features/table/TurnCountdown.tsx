@@ -2,9 +2,13 @@ import { useEffect, useState } from 'react';
 
 interface TurnCountdownProps {
   deadlineUnixMs: number;
+  usingTimebank: boolean;
 }
 
-export function TurnCountdown({ deadlineUnixMs }: TurnCountdownProps) {
+export function TurnCountdown({
+  deadlineUnixMs,
+  usingTimebank,
+}: TurnCountdownProps) {
   const [nowUnixMs, setNowUnixMs] = useState(Date.now);
 
   useEffect(() => {
@@ -20,10 +24,14 @@ export function TurnCountdown({ deadlineUnixMs }: TurnCountdownProps) {
     <div
       className="turn-countdown"
       role="timer"
-      aria-label="Approximate turn time remaining"
+      aria-label={
+        usingTimebank
+          ? 'Approximate timebank time remaining'
+          : 'Approximate turn time remaining'
+      }
       aria-live="off"
     >
-      <span>Approx. turn time</span>
+      <span>{usingTimebank ? 'Timebank' : 'Approx. turn time'}</span>
       <strong>{secondsRemaining}s</strong>
       {secondsRemaining === 0 ? <small>Awaiting table update</small> : null}
     </div>

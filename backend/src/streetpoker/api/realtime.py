@@ -632,15 +632,17 @@ class RealtimeRoomCoordinator:
         await self.registry.shutdown()
 
     def _apply_due_turn_locked(self, room_id: RoomId) -> bool:
-        deadline = self._room_service.current_turn_deadline(room_id)
-        if (
-            deadline is None
-            or self._room_service.clock.now_monotonic_ms() < deadline.monotonic_ms
-            or not self._room_service.expire_turn(deadline)
-        ):
-            return False
-        self._sync_turn_task_locked(room_id)
-        return True
+        changed = False
+        while (deadline := self._room_service.current_turn_deadline(room_id)) is not None:
+            if (
+                self._room_service.clock.now_monotonic_ms() < deadline.monotonic_ms
+                or not self._room_service.expire_turn(deadline)
+            ):
+                break
+            changed = True
+        if changed:
+            self._sync_turn_task_locked(room_id)
+        return changed
 
     def _reject_late_action_locked(self, session: SocketSession, command_id: str) -> None:
         self.registry.enqueue(
@@ -695,6 +697,7 @@ class RealtimeRoomCoordinator:
         async with self._lock_for(deadline.room_id):
             if self._shutting_down or not self._room_service.expire_turn(deadline):
                 return False
+            self._apply_due_turn_locked(deadline.room_id)
             self._sync_turn_task_locked(deadline.room_id)
             self._broadcast_current_locked(deadline.room_id)
             return True

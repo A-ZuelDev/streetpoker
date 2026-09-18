@@ -26,6 +26,8 @@ describe('roomSnapshotToTableView', () => {
       pot: 0,
       board: [],
       actionDeadlineUnixMs: null,
+      currentActorTimebankMs: null,
+      currentActorUsingTimebank: false,
       legalActions: null,
       chat: null,
     });
@@ -49,6 +51,8 @@ describe('roomSnapshotToTableView', () => {
     expect(table.street).toBe('Flop');
     expect(table.pot).toBe(250);
     expect(table.actionDeadlineUnixMs).toBe(1_800_000_000_000);
+    expect(table.currentActorTimebankMs).toBe(60_000);
+    expect(table.currentActorUsingTimebank).toBe(false);
     expect(table.board).toEqual([
       { rank: 'A', suit: 'spades' },
       { rank: '10', suit: 'hearts' },
@@ -120,6 +124,8 @@ describe('roomSnapshotToTableView', () => {
       pot: 0,
       board: [],
       actionDeadlineUnixMs: null,
+      currentActorTimebankMs: null,
+      currentActorUsingTimebank: false,
     });
     expect(table.handCompletion).toEqual({
       handNumber: 1,

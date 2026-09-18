@@ -725,6 +725,11 @@ class _Room:
             raise InvalidRoomStateError(
                 "Active-hand participant mappings must be exact and unique."
             )
+        if set(active.timebank_remaining_ms) != participant_ids or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in active.timebank_remaining_ms.values()
+        ):
+            raise InvalidRoomStateError("Active-hand timebank balances must match participants.")
         for identity in active.identities:
             member = member_by_player.get(identity.player_id)
             seat = table_by_player.get(identity.player_id)
