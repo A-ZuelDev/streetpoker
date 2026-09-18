@@ -5,6 +5,22 @@ class PokerDomainError(Exception):
     """Base class for expected poker-domain failures."""
 
 
+class StandUpError(PokerDomainError):
+    """Base class for invalid pure Stand-Up transitions."""
+
+
+class InvalidStandUpStateError(StandUpError):
+    """Raised when a Stand-Up round, participant, or payout is invalid."""
+
+
+class InvalidStandUpOutcomeError(StandUpError):
+    """Raised when a completed-hand outcome cannot advance a round."""
+
+
+class StaleStandUpOutcomeError(StandUpError):
+    """Raised when a completed hand was already processed or predates the round."""
+
+
 class InvalidCardError(PokerDomainError):
     """Raised when a card is constructed with invalid domain values."""
 

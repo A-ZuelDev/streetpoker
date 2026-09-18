@@ -113,3 +113,22 @@ Evaluation does not imply disclosure. Settlement results remain trusted server-d
 future authorized projection and muck/show policy must independently decide which private cards a
 client may see. Run-it-twice, multiple boards, high/low splits, rake, PLO's exactly-two-hole and
 exactly-three-board constraint, and other poker variants remain outside Phase 6.
+
+Phase 12B adds a separate pure Stand-Up side-game state machine. A round freezes its
+`PlayerId` cohort, seats, starting hand number, and chip penalty per other participant.
+Internally participants are *at risk* until cleared; the later UI may label that state
+"standing". This is unrelated to vacating a poker seat. Only a sole main-pot winner
+clears. A split main pot or side-pot-only win clears nobody. The hand outcome supplied to
+Stand-Up contains only authoritative main-pot winners, hand participants, hand number,
+and button seat; Stand-Up does not inspect cards, bets, side pots, or `HoldemHand`.
+
+When one participant remains at risk, the state machine returns an immutable, capped
+transfer plan. Full payment gives each other original participant the frozen amount.
+If the squid has fewer chips, the available stack is shared evenly, with remainder
+chips assigned clockwise after the completed hand's button. Zero available chips
+produce an empty plan and full shortfall; the application should normally cancel a
+round on bust before requesting resolution. Completed hand numbers must be consecutive;
+duplicate, stale, or skipped outcomes raise typed errors against the updated round.
+Cancellation returns a terminal result with a
+finite reason and no transfers. The state machine never mutates table stacks; room
+lifecycle integration, eligibility cancellation, and transfers belong to Phase 12C.
