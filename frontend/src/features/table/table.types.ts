@@ -199,6 +199,7 @@ export interface TableView {
   bigBlind: number;
   isHost: boolean;
   street: string;
+  actionDeadlineUnixMs: number | null;
   pot: number;
   board: readonly CardView[];
   seats: readonly SeatView[];

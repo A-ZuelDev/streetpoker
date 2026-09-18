@@ -19,6 +19,7 @@ export const activeDemoTable = {
   bigBlind: 100,
   isHost: true,
   street: 'Turn',
+  actionDeadlineUnixMs: null,
   pot: 4_850,
   board: [
     { rank: 'Q', suit: 'clubs' },
@@ -162,6 +163,7 @@ export const openDemoTable = {
   bigBlind: 100,
   isHost: true,
   street: 'Open table',
+  actionDeadlineUnixMs: null,
   pot: 0,
   board: [],
   seats: [

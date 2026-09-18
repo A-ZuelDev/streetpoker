@@ -1,4 +1,5 @@
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -13,6 +14,111 @@ import { roomSnapshotToTableView } from './roomSnapshotAdapter';
 import { TableScreen } from './TableScreen';
 
 describe('TableScreen', () => {
+  it('shows a display-only timer that reaches zero without sending an action', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_799_999_970_000);
+    try {
+      const onPokerAction = vi.fn(() => true);
+      const view = render(
+        <TableScreen
+          table={roomSnapshotToTableView(activeRoomSnapshot(), 'guest_host')}
+          connectionStatus="connected"
+          onPokerAction={onPokerAction}
+        />,
+      );
+      const timer = screen.getByRole('timer', {
+        name: 'Approximate turn time remaining',
+      });
+      expect(timer).toHaveTextContent('30s');
+
+      act(() => vi.advanceTimersByTime(1_050));
+      expect(timer).toHaveTextContent('29s');
+      act(() => vi.advanceTimersByTime(30_000));
+      expect(timer).toHaveTextContent('0s');
+      expect(timer).toHaveTextContent('Awaiting table update');
+      expect(onPokerAction).not.toHaveBeenCalled();
+      expect(screen.getByRole('button', { name: 'Fold' })).toBeEnabled();
+
+      view.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('hides the ticking value while stale and restarts from a fresh deadline', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_799_999_970_000);
+    try {
+      const snapshot = activeRoomSnapshot();
+      const view = render(
+        <TableScreen
+          table={roomSnapshotToTableView(snapshot, 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      expect(screen.getByRole('timer')).toHaveTextContent('30s');
+      expect(vi.getTimerCount()).toBe(1);
+
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(
+            snapshot,
+            'guest_host',
+            'disconnected',
+          )}
+          connectionStatus="disconnected"
+        />,
+      );
+      expect(screen.queryByRole('timer')).toBeNull();
+      expect(screen.getByText('Waiting for fresh state')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Fold' })).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+
+      act(() => vi.advanceTimersByTime(10_000));
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(snapshot, 'guest_host', 'syncing')}
+          connectionStatus="syncing"
+        />,
+      );
+      expect(screen.queryByRole('timer')).toBeNull();
+      expect(screen.getByText('Waiting for fresh state')).toBeInTheDocument();
+
+      const fresh = structuredClone(snapshot);
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(fresh, 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      expect(screen.getByRole('timer')).toHaveTextContent('20s');
+      expect(vi.getTimerCount()).toBe(1);
+
+      fresh.active_hand!.action_sequence += 1;
+      fresh.active_hand!.action_deadline_unix_ms += 20_000;
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(fresh, 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      expect(screen.getByRole('timer')).toHaveTextContent('40s');
+      expect(vi.getTimerCount()).toBe(1);
+
+      view.rerender(
+        <TableScreen
+          table={roomSnapshotToTableView(openRoomSnapshot(), 'guest_host')}
+          connectionStatus="connected"
+        />,
+      );
+      expect(screen.queryByRole('timer')).toBeNull();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('uses coherent contribution, call, and wager totals in the active demo', () => {
     const hero = activeDemoTable.seats.find(
       (seat) => seat.kind === 'occupied' && seat.isHero,

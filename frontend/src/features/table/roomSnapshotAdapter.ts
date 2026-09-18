@@ -287,6 +287,7 @@ export function roomSnapshotToTableView(
     bigBlind: snapshot.room.settings.big_blind,
     isHost,
     street: activeHand === null ? 'Open table' : phaseLabel(activeHand.phase),
+    actionDeadlineUnixMs: activeHand?.action_deadline_unix_ms ?? null,
     pot: activeHand?.pot_chips ?? 0,
     board: activeHand?.board.map(cardView) ?? [],
     seats,

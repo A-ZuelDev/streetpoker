@@ -363,6 +363,30 @@
   font-variant-numeric: tabular-nums;
 }
 
+.turn-countdown {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid rgb(221 183 104 / 32%);
+  border-radius: 0.45rem;
+  color: var(--gold-soft);
+  background: rgb(5 19 14 / 82%);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+.turn-countdown strong {
+  font-size: 0.9rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.turn-countdown small,
+.turn-countdown--stale {
+  color: var(--text-muted);
+}
+
 .table-seat {
   position: absolute;
   z-index: 5;

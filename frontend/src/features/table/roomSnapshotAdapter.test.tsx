@@ -25,6 +25,7 @@ describe('roomSnapshotToTableView', () => {
       roomCode: 'ABCDEFGH',
       pot: 0,
       board: [],
+      actionDeadlineUnixMs: null,
       legalActions: null,
       chat: null,
     });
@@ -47,6 +48,7 @@ describe('roomSnapshotToTableView', () => {
 
     expect(table.street).toBe('Flop');
     expect(table.pot).toBe(250);
+    expect(table.actionDeadlineUnixMs).toBe(1_800_000_000_000);
     expect(table.board).toEqual([
       { rank: 'A', suit: 'spades' },
       { rank: '10', suit: 'hearts' },
@@ -117,6 +119,7 @@ describe('roomSnapshotToTableView', () => {
       street: 'Open table',
       pot: 0,
       board: [],
+      actionDeadlineUnixMs: null,
     });
     expect(table.handCompletion).toEqual({
       handNumber: 1,
