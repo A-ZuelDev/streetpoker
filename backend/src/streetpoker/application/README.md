@@ -127,3 +127,22 @@ identity and the application balance decide correctness. Viewer snapshots includ
 current actor's remaining milliseconds and whether that actor is using timebank. The browser
 uses those fields and the projected Unix deadline for display only. Reconnect and socket
 replacement do not replenish a balance or extend a deadline.
+
+## Phase 11F disconnect grace
+
+An unexpected loss of the authoritative socket starts a process-local 60,000 millisecond grace
+period for a seated member. Socket replacement, Leave, Kick, and Close Room do not start grace.
+The current session identity decides whether disconnect cleanup may start grace; a replaced
+socket's late cleanup cannot affect its successor. A same-token reconnect invalidates the pending
+grace before its fresh viewer-specific state is sent. Grace revisions and monotonic expiry are
+checked under the same room lock as commands. Task cancellation cleans resources but is not the
+authority for seat changes.
+
+If grace expires while the room is open, the disconnected member stands using the existing room
+operation. Membership, host identity, and the exact retained stack remain. If a hand is active,
+the member stays in the hand; seat cleanup waits until settlement and occurs only if the member
+remains disconnected. Action deadlines and timebank continue independently throughout grace.
+If a host approves a pending seat request after its member has disconnected, grace starts when
+the offline member becomes seated, so that seat cannot remain occupied indefinitely.
+Grace state and tasks exist only in this process; a restart does not recover them. Reconnect is
+still manual, and no grace or scheduler identifiers appear in the wire projection.
