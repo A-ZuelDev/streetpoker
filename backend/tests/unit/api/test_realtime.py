@@ -2465,3 +2465,165 @@ def test_grace_scheduler_wakes_and_stands_open_room_member(
 
     monkeypatch.setattr("streetpoker.api.realtime.DISCONNECT_GRACE_MS", 10)
     asyncio.run(scenario())
+
+
+def test_disconnect_one_ms_before_base_and_reconnect_at_expiry_uses_one_extension() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        coordinator = RealtimeRoomCoordinator(service)
+        base = current_deadline(service, room_id)
+        actor_fill = 1 if base.actor == guests["host"] else 2
+        first, _ = await bind_existing_guest(coordinator, service, room_id, actor_fill)
+        before = service.get_room_snapshot(room_id)
+        clock.advance(29_999)
+        await coordinator.disconnect(first)
+        grace = coordinator._graces[(room_id, base.actor)].deadline
+        assert current_deadline(service, room_id) == base
+        clock.advance(1)
+
+        async with coordinator._lock_for(room_id):
+            reconnect = asyncio.create_task(
+                bind_existing_guest(coordinator, service, room_id, actor_fill)
+            )
+            timeout = asyncio.create_task(coordinator.expire_turn(base))
+            await asyncio.sleep(0)
+            assert not reconnect.done() and not timeout.done()
+        (session, socket), _ = await asyncio.gather(reconnect, timeout)
+        extended = current_deadline(service, room_id)
+        assert extended.action_sequence == base.action_sequence + 1
+        assert extended.monotonic_ms == base.monotonic_ms + 60_000
+        assert service.get_room_snapshot(room_id) == before
+        assert (room_id, base.actor) not in coordinator._graces
+        assert await coordinator.expire_grace(grace) is False
+        assert await coordinator.expire_turn(base) is False
+        assert coordinator._turn_tasks[room_id].deadline == extended
+        state = cast(dict[str, object], socket.sent[1])
+        active = cast(dict[str, object], cast(dict[str, object], state["snapshot"])["active_hand"])
+        assert active["action_sequence"] == extended.action_sequence
+        assert active["current_actor_using_timebank"] is True
+        assert active["current_actor_timebank_ms"] == 0
+        await coordinator.disconnect(session)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("first", ["grace", "timeout", "reconnect"])
+def test_coincident_grace_timeout_and_reconnect_settle_and_stand_once(first: str) -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        coordinator = RealtimeRoomCoordinator(service)
+        base = current_deadline(service, room_id)
+        actor_fill = 1 if base.actor == guests["host"] else 2
+        actor, _ = await bind_existing_guest(coordinator, service, room_id, actor_fill)
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(base)
+        extended = current_deadline(service, room_id)
+        await coordinator.disconnect(actor)
+        grace = coordinator._graces[(room_id, base.actor)].deadline
+        assert grace.monotonic_ms == extended.monotonic_ms
+        clock.advance(60_000)
+
+        callbacks = {
+            "grace": lambda: coordinator.expire_grace(grace),
+            "timeout": lambda: coordinator.expire_turn(extended),
+            "reconnect": lambda: bind_existing_guest(coordinator, service, room_id, actor_fill),
+        }
+        order = [first, *(name for name in callbacks if name != first)]
+        async with coordinator._lock_for(room_id):
+            queued = {name: asyncio.create_task(callbacks[name]()) for name in order}
+            await asyncio.sleep(0)
+            assert all(not task.done() for task in queued.values())
+        await asyncio.gather(*queued.values())
+        session, socket = cast(
+            tuple[SocketSession, RecordingWebSocket], queued["reconnect"].result()
+        )
+        snapshot = service.get_room_snapshot(room_id)
+        assert snapshot.status.value == "open"
+        assert all(seat.guest_id != base.actor for seat in snapshot.seats)
+        assert sum(member.stack or 0 for member in snapshot.members) == 2_000
+        assert coordinator._graces == {}
+        assert coordinator._turn_tasks == {}
+        assert await coordinator.expire_grace(grace) is False
+        assert await coordinator.expire_turn(extended) is False
+        state = cast(dict[str, object], socket.sent[1])
+        projected = cast(dict[str, object], state["snapshot"])
+        assert projected["active_hand"] is None
+        assert projected["last_hand"] is not None
+        await coordinator.disconnect(session)
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
+
+
+def test_shutdown_with_live_action_and_grace_tasks_awaits_both() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service()
+        coordinator = RealtimeRoomCoordinator(service)
+        base = current_deadline(service, room_id)
+        actor_fill = 1 if base.actor == guests["host"] else 2
+        actor, _ = await bind_existing_guest(coordinator, service, room_id, actor_fill)
+        action_task = coordinator._turn_tasks[room_id].task
+        await coordinator.disconnect(actor)
+        grace = coordinator._graces[(room_id, base.actor)].deadline
+        grace_task = coordinator._graces[(room_id, base.actor)].task
+        assert grace_task is not None and not grace_task.done() and not action_task.done()
+        before = service.get_room_view(room_id=room_id, viewer=base.actor)
+        await coordinator.shutdown()
+        assert action_task.done() and grace_task.done()
+        assert coordinator._turn_tasks == {}
+        assert coordinator._graces == {}
+        assert coordinator._grace_tasks == set()
+        assert coordinator._presence_sessions == {}
+        clock.advance(90_000)
+        assert await coordinator.expire_turn(base) is False
+        assert await coordinator.expire_grace(grace) is False
+        await coordinator.disconnect(actor)
+        assert coordinator._graces == {}
+        assert service.get_room_view(room_id=room_id, viewer=base.actor) == before
+
+    asyncio.run(scenario())
+
+
+def test_offline_approval_races_reconnect_and_close_clears_new_grace() -> None:
+    async def scenario() -> None:
+        clock = FakeClock()
+        service, room_id, guests = built_service(approval=True, clock=clock)
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        coordinator = RealtimeRoomCoordinator(service)
+        host, _ = await bind_existing_guest(coordinator, service, room_id, 1)
+        alice, _ = await bind_existing_guest(coordinator, service, room_id, 2)
+        await coordinator.handle_command(
+            alice, RequestSeatCommand(type="request_seat", command_id="request", seat_index=2)
+        )
+        await coordinator.disconnect(alice)
+        approve = client_command_adapter.validate_python(
+            {
+                "type": "approve_seat",
+                "command_id": "approve",
+                "target_guest_id": guests["alice"].value,
+            }
+        )
+        async with coordinator._lock_for(room_id):
+            approval = asyncio.create_task(coordinator.handle_command(host, approve))
+            reconnect = asyncio.create_task(bind_existing_guest(coordinator, service, room_id, 2))
+            await asyncio.sleep(0)
+            assert not approval.done() and not reconnect.done()
+        await approval
+        reconnected, _ = await reconnect
+        assert service.get_room_snapshot(room_id).seats[2].guest_id == guests["alice"]
+        assert (room_id, guests["alice"]) not in coordinator._graces
+
+        await coordinator.disconnect(reconnected)
+        grace = coordinator._graces[(room_id, guests["alice"])].deadline
+        await coordinator.handle_command(
+            host, CloseRoomCommand(type="close_room", command_id="close")
+        )
+        assert coordinator._graces == {}
+        clock.advance(60_000)
+        assert await coordinator.expire_grace(grace) is False
+        assert service.get_room_snapshot(room_id).status.value == "closed"
+        await coordinator.shutdown()
+
+    asyncio.run(scenario())
