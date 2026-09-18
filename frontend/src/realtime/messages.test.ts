@@ -32,6 +32,47 @@ describe('serverMessageSchema', () => {
     },
   );
 
+  it('requires public deadline and timebank fields without internal timer state', () => {
+    const snapshot = activeRoomSnapshot();
+    expect(snapshot.active_hand?.action_deadline_unix_ms).toBe(
+      1_800_000_000_000,
+    );
+    snapshot.active_hand!.action_deadline_unix_ms = 1.5;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(false);
+    snapshot.active_hand!.action_deadline_unix_ms = 1_800_000_000_000;
+    snapshot.active_hand!.current_actor_timebank_ms = 1.5;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(false);
+    snapshot.active_hand!.current_actor_timebank_ms = 60_000;
+    snapshot.active_hand!.current_actor_timebank_ms = -1;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(false);
+    snapshot.active_hand!.current_actor_timebank_ms = 60_000;
+    const extra = structuredClone(snapshot) as unknown as Record<
+      string,
+      unknown
+    >;
+    const active = extra.active_hand as Record<string, unknown>;
+    active.timer_revision = 3;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot: extra }).success,
+    ).toBe(false);
+    delete active.timer_revision;
+    delete active.current_actor_using_timebank;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot: extra }).success,
+    ).toBe(false);
+    active.current_actor_using_timebank = false;
+    delete active.action_deadline_unix_ms;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot: extra }).success,
+    ).toBe(false);
+  });
+
   it('rejects unexpected nested fields', () => {
     const snapshot = openRoomSnapshot() as unknown as Record<string, unknown>;
     const room = snapshot.room as Record<string, unknown>;

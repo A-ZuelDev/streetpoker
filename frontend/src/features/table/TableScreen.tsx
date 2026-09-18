@@ -115,6 +115,7 @@ export function TableScreen({
         <main className="table-screen__game">
           <PokerTable
             table={table}
+            isFresh={liveIsFresh}
             {...(onRoomCommand === undefined
               ? {}
               : {

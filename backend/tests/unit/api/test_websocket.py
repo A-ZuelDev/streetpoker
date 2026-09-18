@@ -1,4 +1,5 @@
 import base64
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -10,6 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 from streetpoker.api.app import create_app
 from streetpoker.api.guest_identity import derive_guest_id
 from streetpoker.api.routes import realtime as realtime_route
+from streetpoker.api.schemas.realtime import room_view_dto
 from streetpoker.application import (
     GuestId,
     Pbkdf2PasswordHasher,
@@ -226,20 +228,54 @@ def test_handshake_joins_new_member_and_never_echoes_password_or_token() -> None
     assert "alpha" not in serialized
 
 
-def test_duplicate_tabs_receive_state_but_only_issuer_receives_ack() -> None:
-    service, _, tokens, _ = built_service()
+def test_newest_tab_replaces_older_socket_and_can_issue_room_command() -> None:
+    service, room_id, tokens, _ = built_service()
+    before = service.get_room_snapshot(room_id)
 
     with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as first:
         handshake(first, tokens["host"])
         with client.websocket_connect("/ws/rooms/ABCDEFGH") as second:
             handshake(second, tokens["host"])
-            first.send_json({"type": "request_seat", "command_id": "seat", "seat_index": 1})
+            assert service.get_room_snapshot(room_id) == before
+            with pytest.raises(WebSocketDisconnect) as replaced:
+                first.receive_json()
+            assert replaced.value.code == 1008
+            assert replaced.value.reason == "session ended"
+            second.send_json({"type": "request_seat", "command_id": "seat", "seat_index": 1})
 
-            first_state = receive_ack_and_state(first, "seat")
-            second_state = second.receive_json()
+            second_state = receive_ack_and_state(second, "seat")
 
     assert second_state["type"] == "state"
-    assert first_state["snapshot"] == second_state["snapshot"]
+    assert second_state["snapshot"]["room"]["seats"][1]["guest_id"] is not None
+
+
+def test_replacement_receives_only_its_guest_projection_during_a_hand() -> None:
+    service, room_id, tokens, guests = built_service(join_alice=True, seat_players=True)
+    service.start_hand(room_id=room_id, actor=guests["host"], expected_hand_number=1)
+    before = service.get_room_view(room_id=room_id, viewer=guests["host"])
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as first:
+        first_connected, first_state = handshake(first, tokens["host"])
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as second:
+            second_connected, second_state = handshake(second, tokens["host"])
+            with pytest.raises(WebSocketDisconnect):
+                first.receive_json()
+            with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
+                _, alice_state = handshake(alice, tokens["alice"])
+
+    assert first_connected["guest_id"] == second_connected["guest_id"] == guests["host"].value
+    assert first_state == second_state
+    assert second_state["snapshot"] == room_view_dto(before).model_dump(mode="json")
+    assert service.get_room_view(room_id=room_id, viewer=guests["host"]) == before
+    for state, viewer in (
+        (first_state, guests["host"]),
+        (second_state, guests["host"]),
+        (alice_state, guests["alice"]),
+    ):
+        players = state["snapshot"]["active_hand"]["players"]
+        assert {player["guest_id"] for player in players if player["hole_cards"] is not None} == {
+            viewer.value
+        }
 
 
 def test_protocol_errors_are_typed_sanitized_and_connection_can_continue() -> None:
@@ -508,7 +544,7 @@ def test_seat_request_reject_approve_and_stand_route_through_room_service() -> N
     assert alice_member["status"] == "in_room"
 
 
-def test_leave_acknowledges_issuer_broadcasts_remaining_state_then_closes_all_guest_tabs() -> None:
+def test_leave_acknowledges_current_session_and_closes_its_membership() -> None:
     service, _, tokens, guests = built_service(join_alice=True)
 
     with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
@@ -517,15 +553,16 @@ def test_leave_acknowledges_issuer_broadcasts_remaining_state_then_closes_all_gu
             handshake(alice_one, tokens["alice"])
             with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice_two:
                 handshake(alice_two, tokens["alice"])
-                alice_one.send_json({"type": "leave", "command_id": "leave"})
+                with pytest.raises(WebSocketDisconnect) as replaced:
+                    alice_one.receive_json()
+                assert replaced.value.reason == "session ended"
+                alice_two.send_json({"type": "leave", "command_id": "leave"})
 
-                assert alice_one.receive_json() == {
+                assert alice_two.receive_json() == {
                     "type": "command_ack",
                     "command_id": "leave",
                 }
                 host_state = host.receive_json()
-                with pytest.raises(WebSocketDisconnect):
-                    alice_one.receive_json()
                 with pytest.raises(WebSocketDisconnect):
                     alice_two.receive_json()
 
@@ -538,19 +575,25 @@ def test_kick_acknowledges_host_broadcasts_remaining_state_and_sends_target_no_s
 
     with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
         handshake(host, tokens["host"])
-        with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
-            handshake(alice, tokens["alice"])
-            host.send_json(
-                {
-                    "type": "kick",
-                    "command_id": "kick",
-                    "target_guest_id": guests["alice"].value,
-                }
-            )
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as old_alice:
+            handshake(old_alice, tokens["alice"])
+            with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
+                handshake(alice, tokens["alice"])
+                with pytest.raises(WebSocketDisconnect) as replaced:
+                    old_alice.receive_json()
+                assert replaced.value.reason == "session ended"
+                host.send_json(
+                    {
+                        "type": "kick",
+                        "command_id": "kick",
+                        "target_guest_id": guests["alice"].value,
+                    }
+                )
 
-            host_state = receive_ack_and_state(host, "kick")
-            with pytest.raises(WebSocketDisconnect):
-                alice.receive_json()
+                host_state = receive_ack_and_state(host, "kick")
+                with pytest.raises(WebSocketDisconnect) as kicked:
+                    alice.receive_json()
+                assert kicked.value.reason == "removed from room"
 
     members = host_state["snapshot"]["room"]["members"]
     assert guests["alice"].value not in {item["guest_id"] for item in members}
@@ -559,19 +602,26 @@ def test_kick_acknowledges_host_broadcasts_remaining_state_and_sends_target_no_s
 def test_close_room_queues_host_ack_before_final_state_then_closes_every_socket() -> None:
     service, _, tokens, _ = built_service(join_alice=True)
 
-    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
-        handshake(host, tokens["host"])
-        with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
-            handshake(alice, tokens["alice"])
-            host.send_json({"type": "close_room", "command_id": "close"})
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as old_host:
+        handshake(old_host, tokens["host"])
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
+            handshake(host, tokens["host"])
+            with pytest.raises(WebSocketDisconnect) as replaced:
+                old_host.receive_json()
+            assert replaced.value.reason == "session ended"
+            with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
+                handshake(alice, tokens["alice"])
+                host.send_json({"type": "close_room", "command_id": "close"})
 
-            host_ack = host.receive_json()
-            host_state = host.receive_json()
-            alice_state = alice.receive_json()
-            with pytest.raises(WebSocketDisconnect):
-                host.receive_json()
-            with pytest.raises(WebSocketDisconnect):
-                alice.receive_json()
+                host_ack = host.receive_json()
+                host_state = host.receive_json()
+                alice_state = alice.receive_json()
+                with pytest.raises(WebSocketDisconnect) as host_closed:
+                    host.receive_json()
+                with pytest.raises(WebSocketDisconnect) as alice_closed:
+                    alice.receive_json()
+                assert host_closed.value.reason == "room closed"
+                assert alice_closed.value.reason == "room closed"
 
     assert host_ack == {"type": "command_ack", "command_id": "close"}
     assert host_state["type"] == "state"
@@ -579,15 +629,171 @@ def test_close_room_queues_host_ack_before_final_state_then_closes_every_socket(
     assert alice_state["snapshot"]["room"]["status"] == "closed"
 
 
-def test_transport_disconnect_removes_no_membership_or_poker_state() -> None:
+@pytest.mark.parametrize("departure", ["leave", "kick"])
+def test_explicit_departure_requires_a_new_join_not_same_token_reconnect(departure: str) -> None:
+    service, room_id, tokens, guests = built_service(join_alice=True)
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
+        handshake(host, tokens["host"])
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
+            handshake(alice, tokens["alice"])
+            if departure == "leave":
+                alice.send_json({"type": "leave", "command_id": "depart"})
+                assert alice.receive_json() == {"type": "command_ack", "command_id": "depart"}
+                host_state = host.receive_json()
+            else:
+                host.send_json(
+                    {
+                        "type": "kick",
+                        "command_id": "depart",
+                        "target_guest_id": guests["alice"].value,
+                    }
+                )
+                host_state = receive_ack_and_state(host, "depart")
+            with pytest.raises(WebSocketDisconnect):
+                alice.receive_json()
+
+        assert guests["alice"].value not in {
+            member["guest_id"] for member in host_state["snapshot"]["room"]["members"]
+        }
+        assert guests["alice"] not in {
+            member.guest_id for member in service.get_room_snapshot(room_id).members
+        }
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as reconnect:
+            reconnect.send_json({"type": "connect", "guest_token": tokens["alice"]})
+            rejected = reconnect.receive_json()
+            assert rejected["type"] == "connection_error"
+            assert rejected["code"] == "membership_required"
+            with pytest.raises(WebSocketDisconnect):
+                reconnect.receive_json()
+
+
+def test_closed_room_rejects_same_token_reconnect() -> None:
+    service, room_id, tokens, _ = built_service()
+
+    with app_client(service) as client:
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
+            handshake(host, tokens["host"])
+            host.send_json({"type": "close_room", "command_id": "close"})
+            closed = receive_ack_and_state(host, "close")
+            assert closed["snapshot"]["room"]["status"] == "closed"
+            with pytest.raises(WebSocketDisconnect):
+                host.receive_json()
+
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as reconnect:
+            reconnect.send_json({"type": "connect", "guest_token": tokens["host"]})
+            rejected = reconnect.receive_json()
+            assert rejected["type"] == "connection_error"
+            assert rejected["code"] == "room_closed"
+            with pytest.raises(WebSocketDisconnect):
+                reconnect.receive_json()
+
+    assert service.get_room_snapshot(room_id).status.value == "closed"
+
+
+def test_host_transport_disconnect_preserves_open_room_and_host_authority() -> None:
     service, room_id, tokens, guests = built_service(join_alice=True, seat_players=True)
     before = service.get_room_view(room_id=room_id, viewer=guests["host"])
 
     with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as alice:
         handshake(alice, tokens["alice"])
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
+            first_connected, first_state = handshake(host, tokens["host"])
 
-    after = service.get_room_view(room_id=room_id, viewer=guests["host"])
-    assert after == before
+        assert service.get_room_view(room_id=room_id, viewer=guests["host"]) == before
+        assert service.get_room_snapshot(room_id).host_guest_id == guests["host"]
+        alice.send_json({"type": "start_hand", "command_id": "not-host", "hand_number": 1})
+        assert alice.receive_json()["code"] == "not_room_host"
+
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as reconnected:
+            connected, state = handshake(reconnected, tokens["host"])
+            assert connected == first_connected
+            assert state == first_state
+            assert state["snapshot"] == room_view_dto(before).model_dump(mode="json")
+            reconnected.send_json(
+                {"type": "start_hand", "command_id": "host-start", "hand_number": 1}
+            )
+            started = receive_ack_and_state(reconnected, "host-start")
+            assert started["snapshot"]["active_hand"] is not None
+
+
+@pytest.mark.parametrize("disconnect_current_actor", [True, False])
+def test_active_hand_disconnect_and_same_token_reconnect_preserve_private_hand(
+    disconnect_current_actor: bool,
+) -> None:
+    service, room_id, tokens, guests = built_service(
+        password="private-password", join_alice=True, seat_players=True
+    )
+    service.start_hand(room_id=room_id, actor=guests["host"], expected_hand_number=1)
+    initial = service.get_room_view(room_id=room_id, viewer=guests["host"])
+    assert initial.active_hand is not None
+    actor = initial.active_hand.current_actor
+    disconnected_guest = (
+        actor
+        if disconnect_current_actor
+        else next(guest for guest in (guests["host"], guests["alice"]) if guest != actor)
+    )
+    connected_guest = next(
+        guest for guest in (guests["host"], guests["alice"]) if guest != disconnected_guest
+    )
+    token_by_guest = {guests[name]: tokens[name] for name in ("host", "alice")}
+    before = service.get_room_view(room_id=room_id, viewer=disconnected_guest)
+    assert before.active_hand is not None
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as remaining:
+        _, remaining_state = handshake(remaining, token_by_guest[connected_guest])
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as original:
+            first_connected, _ = handshake(original, token_by_guest[disconnected_guest])
+
+        # Transport loss performs no fold, check, stand, leave, or stack mutation.
+        assert service.get_room_view(room_id=room_id, viewer=disconnected_guest) == before
+        if not disconnect_current_actor:
+            remaining.send_json(
+                {
+                    "type": "call",
+                    "command_id": "while-offline",
+                    "hand_number": before.active_hand.hand_number,
+                    "expected_action_sequence": before.active_hand.action_sequence,
+                }
+            )
+            receive_ack_and_state(remaining, "while-offline")
+
+        with client.websocket_connect("/ws/rooms/ABCDEFGH") as reconnected:
+            connected, state = handshake(reconnected, token_by_guest[disconnected_guest])
+            current = service.get_room_view(room_id=room_id, viewer=disconnected_guest)
+            assert connected == first_connected
+            assert state["snapshot"] == room_view_dto(current).model_dump(mode="json")
+            assert current.room.host_guest_id == before.room.host_guest_id
+            assert [member.guest_id for member in current.room.members] == [
+                member.guest_id for member in before.room.members
+            ]
+            assert [seat.guest_id for seat in current.room.seats] == [
+                seat.guest_id for seat in before.room.seats
+            ]
+            hand = state["snapshot"]["active_hand"]
+            assert hand is not None
+            if disconnect_current_actor:
+                assert hand["current_actor"] == actor.value
+                assert hand["action_sequence"] == before.active_hand.action_sequence
+                assert current == before
+            else:
+                assert hand["action_sequence"] == before.active_hand.action_sequence + 1
+
+            players = hand["players"]
+            assert {
+                player["guest_id"] for player in players if player["hole_cards"] is not None
+            } == {disconnected_guest.value}
+            opponent_players = remaining_state["snapshot"]["active_hand"]["players"]
+            assert {
+                player["guest_id"]
+                for player in opponent_players
+                if player["hole_cards"] is not None
+            } == {connected_guest.value}
+            encoded = json.dumps(state)
+            assert token_by_guest[disconnected_guest] not in encoded
+            assert "private-password" not in encoded
+            assert "transport-private-player" not in encoded
+            assert '"player_id"' not in encoded
 
 
 def test_stale_command_returns_error_then_authoritative_state_without_mutation() -> None:

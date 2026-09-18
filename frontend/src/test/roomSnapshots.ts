@@ -105,6 +105,9 @@ export function activeRoomSnapshot(roomName = 'Friday Night'): RoomView {
   snapshot.active_hand = {
     hand_number: 1,
     action_sequence: 2,
+    action_deadline_unix_ms: 1_800_000_000_000,
+    current_actor_timebank_ms: 60_000,
+    current_actor_using_timebank: false,
     phase: 'flop',
     button_seat: 2,
     small_blind_seat: 0,

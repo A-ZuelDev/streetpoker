@@ -852,6 +852,83 @@ describe('useRoomSession', () => {
     expect(unknown.result.current.canReconnect).toBe(true);
   });
 
+  it('keeps a replaced tab stale and resyncs manually without replaying its command', () => {
+    const setupResult = setup({ commandIdFactory: () => 'old-action' });
+    act(() => {
+      setupResult.result.current.joinRoom({
+        roomCode: 'ABCDEFGH',
+        nickname: 'Mara',
+      });
+    });
+    const first = setupResult.sockets[0]!;
+    const stale = activeRoomSnapshot('Old table');
+    act(() => {
+      first.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+      first.message({ type: 'state', snapshot: stale });
+      expect(
+        setupResult.result.current.sendPokerAction({
+          type: 'call',
+          contextKey: pokerActionContextKey(stale.active_hand!, 'call'),
+        }),
+      ).toBe(true);
+      first.serverClose({
+        code: 1008,
+        reason: 'session ended',
+        wasClean: true,
+      });
+    });
+    expect(setupResult.store.getState()).toMatchObject({
+      status: 'disconnected',
+      snapshot: stale,
+      pendingPokerCommand: null,
+      roomExit: null,
+    });
+    expect(setupResult.result.current.canReconnect).toBe(true);
+    expect(
+      setupResult.result.current.sendPokerAction({
+        type: 'call',
+        contextKey: pokerActionContextKey(stale.active_hand!, 'call'),
+      }),
+    ).toBe(false);
+    expect(JSON.stringify(setupResult.store.getState())).not.toContain(
+      'session ended',
+    );
+
+    act(() => setupResult.result.current.reconnect());
+    const second = setupResult.sockets[1]!;
+    expect(setupResult.store.getState().status).toBe('connecting');
+    expect(second.options.connectFrame).toEqual({
+      type: 'connect',
+      guest_token: token,
+    });
+    act(() => {
+      second.message({
+        type: 'connected',
+        guest_id: 'guest_host',
+        room_code: 'ABCDEFGH',
+      });
+    });
+    expect(setupResult.store.getState().status).toBe('syncing');
+    expect(setupResult.store.getState().snapshot).toBe(stale);
+    expect(second.commands).toEqual([]);
+    act(() => {
+      second.message({
+        type: 'state',
+        snapshot: activeRoomSnapshot('Fresh table'),
+      });
+    });
+    expect(setupResult.store.getState().status).toBe('connected');
+    expect(setupResult.store.getState().snapshot?.room.settings.room_name).toBe(
+      'Fresh table',
+    );
+    expect(first.commands).toHaveLength(1);
+    expect(second.commands).toEqual([]);
+  });
+
   it.each([
     ['room_closed', 'closed'],
     ['membership_required', 'kicked'],

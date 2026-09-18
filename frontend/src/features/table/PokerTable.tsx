@@ -1,10 +1,12 @@
 import { formatChips } from './formatChips';
 import { PlayerPod } from './PlayerPod';
 import { PlayingCard } from './PlayingCard';
+import { TurnCountdown } from './TurnCountdown';
 import type { SeatView, TableDemoView } from './table.types';
 
 interface PokerTableProps {
   table: TableDemoView;
+  isFresh: boolean;
   onRequestSeat?: (seatIndex: number) => void;
 }
 
@@ -35,7 +37,7 @@ function ContributionMarker({ seat }: { seat: SeatView }) {
   );
 }
 
-export function PokerTable({ table, onRequestSeat }: PokerTableProps) {
+export function PokerTable({ table, isFresh, onRequestSeat }: PokerTableProps) {
   return (
     <section className="poker-stage" aria-label="Six-max poker table">
       <div className="poker-table">
@@ -70,6 +72,20 @@ export function PokerTable({ table, onRequestSeat }: PokerTableProps) {
                 {formatChips(table.pot)}
               </span>
             </div>
+            {table.mode === 'live' && table.actionDeadlineUnixMs !== null ? (
+              isFresh ? (
+                <TurnCountdown
+                  key={table.actionDeadlineUnixMs}
+                  deadlineUnixMs={table.actionDeadlineUnixMs}
+                  usingTimebank={table.currentActorUsingTimebank}
+                />
+              ) : (
+                <div className="turn-countdown turn-countdown--stale">
+                  <span>Approx. turn time</span>
+                  <strong>Waiting for fresh state</strong>
+                </div>
+              )
+            ) : null}
           </>
         ) : (
           <div

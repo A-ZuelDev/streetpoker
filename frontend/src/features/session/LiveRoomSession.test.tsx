@@ -239,6 +239,60 @@ describe('LiveRoomSession', () => {
     expect(screen.queryByText('Stale room')).toBeNull();
   });
 
+  it('requires fresh state before restoring the turn countdown after reconnect', async () => {
+    renderSession();
+    const form = formFor('Join a room');
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Room code' }), {
+      target: { value: 'ABCDEFGH' },
+    });
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Nickname' }), {
+      target: { value: 'Mara' },
+    });
+    fireEvent.submit(form);
+
+    const snapshot = activeRoomSnapshot();
+    snapshot.active_hand!.action_deadline_unix_ms = Date.now() + 30_000;
+    const first = FakeBrowserSocket.instances[0]!;
+    connectAndState(first, snapshot);
+    expect(await screen.findByRole('timer')).toBeInTheDocument();
+
+    first.serverClose();
+    expect(
+      await screen.findByText('Waiting for fresh state'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Fold' })).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
+    const second = FakeBrowserSocket.instances[1]!;
+    second.serverOpen();
+    second.serverMessage({
+      type: 'connected',
+      guest_id: 'guest_host',
+      room_code: 'ABCDEFGH',
+    });
+    expect(
+      await screen.findByText('Connected. Waiting for a fresh table update.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('timer')).toBeNull();
+    expect(screen.getByText('Waiting for fresh state')).toBeInTheDocument();
+
+    const extended = structuredClone(snapshot);
+    extended.active_hand!.action_sequence += 1;
+    extended.active_hand!.action_deadline_unix_ms += 60_000;
+    extended.active_hand!.current_actor_timebank_ms = 0;
+    extended.active_hand!.current_actor_using_timebank = true;
+    second.serverMessage({ type: 'state', snapshot: extended });
+    expect(
+      await screen.findByRole('timer', {
+        name: 'Approximate timebank time remaining',
+      }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Timebank')).toBeInTheDocument();
+    expect(screen.queryByText('Waiting for fresh state')).toBeNull();
+    expect(second.sent).toHaveLength(1);
+  });
+
   it('offers reconnect after membership confirmation even before the first state', async () => {
     renderSession();
     const form = formFor('Join a room');

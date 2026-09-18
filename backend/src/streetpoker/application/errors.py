@@ -161,6 +161,10 @@ class StaleHandVersionError(GameplayError):
     """Raised when a hand number or action sequence compare-and-swap fails."""
 
 
+class ActionDeadlineExpiredError(GameplayError):
+    """Raised when a player action reaches application admission after expiry."""
+
+
 class GameplaySettlementError(GameplayError):
     """Raised when terminal settlement cannot reconcile to the room table."""
 

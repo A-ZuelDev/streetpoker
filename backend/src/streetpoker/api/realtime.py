@@ -37,6 +37,7 @@ from streetpoker.api.schemas.realtime import (
     room_view_dto,
 )
 from streetpoker.application import (
+    ActionDeadlineExpiredError,
     ActiveHandMutationError,
     CannotKickHostError,
     CannotStartHandError,
@@ -65,6 +66,7 @@ from streetpoker.application import (
     RoomApplicationError,
     RoomClosedError,
     RoomId,
+    RoomMemberStatus,
     RoomNotFoundError,
     RoomSeatAlreadyRequestedError,
     RoomSeatOccupiedError,
@@ -74,6 +76,7 @@ from streetpoker.application import (
     RoomStatus,
     SeatRequestNotFoundError,
     StaleHandVersionError,
+    TurnDeadline,
     WrongRoomPasswordError,
 )
 from streetpoker.application.rooms import (
@@ -100,6 +103,8 @@ OUTBOUND_QUEUE_CAPACITY: Final = 32
 NORMAL_CLOSE: Final = 1000
 POLICY_CLOSE: Final = 1008
 TRY_AGAIN_CLOSE: Final = 1013
+SUPERSEDED_CLOSE_REASON: Final = "session ended"
+DISCONNECT_GRACE_MS: Final = 60_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,6 +136,28 @@ class SocketSession:
     outbound: asyncio.Queue[_OutboundItem]
     writer: asyncio.Task[None] | None = None
     registered: bool = True
+    suppress_grace: bool = False
+
+
+@dataclass(slots=True)
+class _ScheduledTurn:
+    deadline: TurnDeadline
+    task: asyncio.Task[None]
+
+
+@dataclass(frozen=True, slots=True)
+class GraceDeadline:
+    room_id: RoomId
+    guest_id: GuestId
+    revision: int
+    monotonic_ms: int
+
+
+@dataclass(slots=True)
+class _ScheduledGrace:
+    deadline: GraceDeadline
+    task: asyncio.Task[None] | None
+    expired: bool = False
 
 
 async def _run_serialized_in_thread[**P, T](
@@ -154,10 +181,10 @@ async def _run_serialized_in_thread[**P, T](
 
 
 class ConnectionRegistry:
-    """Own socket bindings and ordered, bounded outbound writers only."""
+    """Own one authoritative socket per room guest and bounded outbound writers."""
 
     def __init__(self) -> None:
-        self._by_room: dict[RoomId, dict[GuestId, set[SocketSession]]] = {}
+        self._by_room: dict[RoomId, dict[GuestId, SocketSession]] = {}
         self._by_socket: dict[WebSocket, SocketSession] = {}
         self._background_tasks: set[asyncio.Task[None]] = set()
 
@@ -170,24 +197,30 @@ class ConnectionRegistry:
             guest_id=guest_id,
             outbound=asyncio.Queue(maxsize=OUTBOUND_QUEUE_CAPACITY),
         )
-        self._by_room.setdefault(room_id, {}).setdefault(guest_id, set()).add(session)
-        self._by_socket[websocket] = session
+        room = self._by_room.setdefault(room_id, {})
+        previous = room.get(guest_id)
         session.writer = asyncio.create_task(self._write(session))
+        room[guest_id] = session
+        self._by_socket[websocket] = session
+        if previous is not None:
+            self._remove(previous)
+            self._schedule(self._abort(previous, POLICY_CLOSE, SUPERSEDED_CLOSE_REASON))
         return session
 
     def is_registered(self, session: SocketSession) -> bool:
-        return session.registered and self._by_socket.get(session.websocket) is session
+        return (
+            session.registered
+            and self._by_socket.get(session.websocket) is session
+            and self._by_room.get(session.room_id, {}).get(session.guest_id) is session
+        )
 
     def sessions_by_guest(self, room_id: RoomId) -> dict[GuestId, tuple[SocketSession, ...]]:
         return {
-            guest_id: tuple(sessions)
-            for guest_id, sessions in self._by_room.get(room_id, {}).items()
+            guest_id: (session,) for guest_id, session in self._by_room.get(room_id, {}).items()
         }
 
     def all_sessions(self, room_id: RoomId) -> tuple[SocketSession, ...]:
-        return tuple(
-            session for sessions in self._by_room.get(room_id, {}).values() for session in sessions
-        )
+        return tuple(self._by_room.get(room_id, {}).values())
 
     def enqueue(self, session: SocketSession, message: OutboundMessage) -> bool:
         if not self.is_registered(session):
@@ -201,8 +234,8 @@ class ConnectionRegistry:
         return True
 
     def detach_guest(self, room_id: RoomId, guest_id: GuestId, *, code: int, reason: str) -> None:
-        sessions = tuple(self._by_room.get(room_id, {}).get(guest_id, ()))
-        for session in sessions:
+        session = self._by_room.get(room_id, {}).get(guest_id)
+        if session is not None:
             self._detach_and_queue_close(session, code=code, reason=reason)
 
     def detach_session(self, session: SocketSession, *, code: int, reason: str) -> None:
@@ -222,7 +255,8 @@ class ConnectionRegistry:
                 with suppress(asyncio.CancelledError):
                     await writer
             else:
-                await writer
+                with suppress(asyncio.CancelledError):
+                    await writer
 
     async def shutdown(self) -> None:
         sessions = tuple(self._by_socket.values())
@@ -251,15 +285,13 @@ class ConnectionRegistry:
         if not session.registered:
             return
         session.registered = False
-        self._by_socket.pop(session.websocket, None)
+        if self._by_socket.get(session.websocket) is session:
+            self._by_socket.pop(session.websocket)
         room = self._by_room.get(session.room_id)
         if room is None:
             return
-        sessions = room.get(session.guest_id)
-        if sessions is not None:
-            sessions.discard(session)
-            if not sessions:
-                room.pop(session.guest_id, None)
+        if room.get(session.guest_id) is session:
+            room.pop(session.guest_id)
         if not room:
             self._by_room.pop(session.room_id, None)
 
@@ -377,6 +409,12 @@ class RealtimeRoomCoordinator:
         self.registry = ConnectionRegistry() if registry is None else registry
         self._room_creation_lock = asyncio.Lock()
         self._room_locks: dict[RoomId, asyncio.Lock] = {}
+        self._turn_tasks: dict[RoomId, _ScheduledTurn] = {}
+        self._presence_sessions: dict[tuple[RoomId, GuestId], SocketSession] = {}
+        self._graces: dict[tuple[RoomId, GuestId], _ScheduledGrace] = {}
+        self._grace_tasks: set[asyncio.Task[None]] = set()
+        self._next_grace_revision = 0
+        self._shutting_down = False
 
     async def create_room(
         self,
@@ -426,6 +464,10 @@ class RealtimeRoomCoordinator:
                     raise RuntimeError("Room code resolution changed unexpectedly.")
                 if current.status is RoomStatus.CLOSED:
                     raise RoomClosedError("The room is closed.")
+                if self._apply_due_turn_locked(room_id):
+                    self._broadcast_current_locked(room_id)
+                if self._resolve_due_graces_locked(room_id):
+                    self._broadcast_current_locked(room_id)
                 joined = False
                 try:
                     initial_view = self._room_service.get_room_view(
@@ -457,6 +499,8 @@ class RealtimeRoomCoordinator:
                 if joined:
                     states[guest_id] = initial_state
                 session = self.registry.register(websocket, room_id, guest_id)
+                self._presence_sessions[(room_id, guest_id)] = session
+                self._discard_grace_locked((room_id, guest_id))
                 self.registry.enqueue(
                     session,
                     ConnectedMessage(guest_id=guest_id.value, room_code=current.room_code),
@@ -465,6 +509,7 @@ class RealtimeRoomCoordinator:
                     self._enqueue_states(room_id, states)
                 else:
                     self.registry.enqueue(session, initial_state)
+                self._sync_turn_task_locked(room_id)
                 return session
             except ConnectionFailure:
                 raise
@@ -483,8 +528,28 @@ class RealtimeRoomCoordinator:
         async with self._lock_for(session.room_id):
             if not self.registry.is_registered(session):
                 return
+            if self._resolve_due_graces_locked(session.room_id):
+                self._broadcast_current_locked(session.room_id)
+            admitted_at_monotonic_ms: int | None = None
+            if isinstance(
+                command,
+                (FoldCommand, CheckCommand, CallCommand, BetToCommand, RaiseToCommand),
+            ):
+                admitted_at_monotonic_ms = self._room_service.clock.now_monotonic_ms()
+                deadline = self._room_service.current_turn_deadline(session.room_id)
+                if (
+                    deadline is not None
+                    and admitted_at_monotonic_ms >= deadline.monotonic_ms
+                    and self._apply_due_turn_locked(session.room_id)
+                ):
+                    self._reject_late_action_locked(session, command.command_id)
+                    return
             try:
-                await self._dispatch(session, command)
+                await self._dispatch(session, command, admitted_at_monotonic_ms)
+            except ActionDeadlineExpiredError:
+                self._apply_due_turn_locked(session.room_id)
+                self._reject_late_action_locked(session, command.command_id)
+                return
             except (RoomApplicationError, PokerDomainError) as error:
                 translated = safe_error(error)
                 if translated.code == "internal_error":
@@ -526,6 +591,18 @@ class RealtimeRoomCoordinator:
                 )
                 return
 
+            self._settle_expired_graces_locked(session.room_id)
+            self._sync_turn_task_locked(session.room_id)
+            if isinstance(command, ApproveSeatCommand):
+                target = GuestId(command.target_guest_id)
+                if (session.room_id, target) not in self._presence_sessions:
+                    self._start_grace_locked(session.room_id, target)
+            elif isinstance(command, LeaveCommand):
+                self._retire_presence_locked(session.room_id, session.guest_id)
+            elif isinstance(command, KickCommand):
+                self._retire_presence_locked(session.room_id, GuestId(command.target_guest_id))
+            elif isinstance(command, CloseRoomCommand):
+                self._retire_room_presence_locked(session.room_id)
             self.registry.enqueue(session, CommandAckMessage(command_id=command.command_id))
             try:
                 states = self._viewer_states(session.room_id)
@@ -581,10 +658,239 @@ class RealtimeRoomCoordinator:
         )
 
     async def disconnect(self, session: SocketSession) -> None:
+        async with self._lock_for(session.room_id):
+            key = (session.room_id, session.guest_id)
+            if self._presence_sessions.get(key) is session:
+                self._presence_sessions.pop(key)
+                if not session.suppress_grace and not self._shutting_down:
+                    snapshot = self._room_service.get_room_snapshot(session.room_id)
+                    if snapshot.status is not RoomStatus.CLOSED and any(
+                        member.guest_id == session.guest_id
+                        and member.status is RoomMemberStatus.SEATED
+                        for member in snapshot.members
+                    ):
+                        self._start_grace_locked(session.room_id, session.guest_id)
         await self.registry.disconnect(session)
 
     async def shutdown(self) -> None:
+        self._shutting_down = True
+        tasks = tuple(item.task for item in self._turn_tasks.values())
+        self._turn_tasks.clear()
+        grace_tasks = tuple(self._grace_tasks)
+        self._grace_tasks.clear()
+        self._graces.clear()
+        self._presence_sessions.clear()
+        tasks += grace_tasks
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         await self.registry.shutdown()
+
+    def _apply_due_turn_locked(self, room_id: RoomId) -> bool:
+        changed = False
+        while (deadline := self._room_service.current_turn_deadline(room_id)) is not None:
+            if (
+                self._room_service.clock.now_monotonic_ms() < deadline.monotonic_ms
+                or not self._room_service.expire_turn(deadline)
+            ):
+                break
+            changed = True
+        if changed:
+            self._sync_turn_task_locked(room_id)
+            self._settle_expired_graces_locked(room_id)
+        return changed
+
+    def _reject_late_action_locked(self, session: SocketSession, command_id: str) -> None:
+        self.registry.enqueue(
+            session,
+            CommandErrorMessage(
+                command_id=command_id,
+                code="stale_game_state",
+                message="The command used an outdated hand state.",
+            ),
+        )
+        self._broadcast_current_locked(session.room_id)
+
+    def _broadcast_current_locked(self, room_id: RoomId) -> None:
+        try:
+            self._enqueue_states(room_id, self._viewer_states(room_id))
+        except Exception:
+            logger.error("Realtime state projection failed after a timeout")
+            self.registry.detach_room(room_id, code=1011, reason="state synchronization failed")
+
+    def _sync_turn_task_locked(self, room_id: RoomId) -> None:
+        deadline = self._room_service.current_turn_deadline(room_id)
+        current = self._turn_tasks.get(room_id)
+        if current is not None and current.deadline == deadline:
+            return
+        if current is not None:
+            self._turn_tasks.pop(room_id)
+            if current.task is not asyncio.current_task():
+                current.task.cancel()
+        if deadline is not None and not self._shutting_down:
+            task = asyncio.create_task(self._run_turn_timer(deadline))
+            self._turn_tasks[room_id] = _ScheduledTurn(deadline, task)
+
+    async def _run_turn_timer(self, deadline: TurnDeadline) -> None:
+        try:
+            while True:
+                remaining = deadline.monotonic_ms - self._room_service.clock.now_monotonic_ms()
+                if remaining <= 0:
+                    await self.expire_turn(deadline)
+                    return
+                await asyncio.sleep(remaining / 1_000)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.error("Realtime action timeout failed")
+        finally:
+            current = self._turn_tasks.get(deadline.room_id)
+            if current is not None and current.task is asyncio.current_task():
+                self._turn_tasks.pop(deadline.room_id)
+
+    async def expire_turn(self, deadline: TurnDeadline) -> bool:
+        """Validate a scheduled callback against current application state under the room lock."""
+        async with self._lock_for(deadline.room_id):
+            if self._shutting_down or not self._room_service.expire_turn(deadline):
+                return False
+            self._apply_due_turn_locked(deadline.room_id)
+            self._settle_expired_graces_locked(deadline.room_id)
+            self._sync_turn_task_locked(deadline.room_id)
+            self._broadcast_current_locked(deadline.room_id)
+            return True
+
+    def _start_grace_locked(self, room_id: RoomId, guest_id: GuestId) -> None:
+        if self._shutting_down:
+            return
+        key = (room_id, guest_id)
+        self._discard_grace_locked(key)
+        self._next_grace_revision += 1
+        deadline = GraceDeadline(
+            room_id,
+            guest_id,
+            self._next_grace_revision,
+            self._room_service.clock.now_monotonic_ms() + DISCONNECT_GRACE_MS,
+        )
+        task = asyncio.create_task(self._run_grace_timer(deadline))
+        self._grace_tasks.add(task)
+        task.add_done_callback(self._grace_tasks.discard)
+        self._graces[key] = _ScheduledGrace(deadline, task)
+
+    def _discard_grace_locked(self, key: tuple[RoomId, GuestId]) -> None:
+        current = self._graces.pop(key, None)
+        if (
+            current is not None
+            and current.task is not None
+            and current.task is not asyncio.current_task()
+        ):
+            current.task.cancel()
+
+    def _retire_presence_locked(self, room_id: RoomId, guest_id: GuestId) -> None:
+        key = (room_id, guest_id)
+        session = self._presence_sessions.pop(key, None)
+        if session is not None:
+            session.suppress_grace = True
+        self._discard_grace_locked(key)
+
+    def _retire_room_presence_locked(self, room_id: RoomId) -> None:
+        for key in tuple(self._presence_sessions):
+            if key[0] == room_id:
+                self._retire_presence_locked(*key)
+        for key in tuple(self._graces):
+            if key[0] == room_id:
+                self._discard_grace_locked(key)
+
+    def _resolve_due_graces_locked(self, room_id: RoomId) -> bool:
+        changed = False
+        for current in tuple(self._graces.values()):
+            if current.deadline.room_id == room_id:
+                changed |= self._expire_grace_locked(current.deadline)
+        return changed
+
+    def _expire_grace_locked(self, deadline: GraceDeadline) -> bool:
+        key = (deadline.room_id, deadline.guest_id)
+        current = self._graces.get(key)
+        if (
+            current is None
+            or current.deadline != deadline
+            or current.expired
+            or key in self._presence_sessions
+            or self._shutting_down
+            or self._room_service.clock.now_monotonic_ms() < deadline.monotonic_ms
+        ):
+            return False
+        snapshot = self._room_service.get_room_snapshot(deadline.room_id)
+        if snapshot.status is RoomStatus.HAND_IN_PROGRESS:
+            current.expired = True
+            if current.task is not None and current.task is not asyncio.current_task():
+                current.task.cancel()
+            current.task = None
+            return False
+        if snapshot.status is RoomStatus.CLOSED or not any(
+            member.guest_id == deadline.guest_id and member.status is RoomMemberStatus.SEATED
+            for member in snapshot.members
+        ):
+            self._discard_grace_locked(key)
+            return False
+        self._room_service.stand_up(room_id=deadline.room_id, actor=deadline.guest_id)
+        self._discard_grace_locked(key)
+        return True
+
+    def _settle_expired_graces_locked(self, room_id: RoomId) -> bool:
+        if self._room_service.get_room_snapshot(room_id).status is not RoomStatus.OPEN:
+            return False
+        changed = False
+        for current in tuple(self._graces.values()):
+            if current.deadline.room_id == room_id:
+                key = (room_id, current.deadline.guest_id)
+                if key not in self._presence_sessions:
+                    if current.expired:
+                        changed |= self._expire_deferred_grace_locked(current.deadline)
+                    else:
+                        changed |= self._expire_grace_locked(current.deadline)
+        return changed
+
+    def _expire_deferred_grace_locked(self, deadline: GraceDeadline) -> bool:
+        key = (deadline.room_id, deadline.guest_id)
+        current = self._graces.get(key)
+        if current is None or current.deadline != deadline or key in self._presence_sessions:
+            return False
+        snapshot = self._room_service.get_room_snapshot(deadline.room_id)
+        if snapshot.status is not RoomStatus.OPEN or not any(
+            member.guest_id == deadline.guest_id and member.status is RoomMemberStatus.SEATED
+            for member in snapshot.members
+        ):
+            self._discard_grace_locked(key)
+            return False
+        self._room_service.stand_up(room_id=deadline.room_id, actor=deadline.guest_id)
+        self._discard_grace_locked(key)
+        return True
+
+    async def _run_grace_timer(self, deadline: GraceDeadline) -> None:
+        try:
+            while True:
+                remaining = deadline.monotonic_ms - self._room_service.clock.now_monotonic_ms()
+                if remaining <= 0:
+                    await self.expire_grace(deadline)
+                    return
+                await asyncio.sleep(remaining / 1_000)
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.error("Realtime disconnect grace failed")
+        finally:
+            current = self._graces.get((deadline.room_id, deadline.guest_id))
+            if current is not None and current.task is asyncio.current_task():
+                current.task = None
+
+    async def expire_grace(self, deadline: GraceDeadline) -> bool:
+        """Resolve only the current, due grace under the room's serialization lock."""
+        async with self._lock_for(deadline.room_id):
+            changed = self._expire_grace_locked(deadline)
+            if changed:
+                self._broadcast_current_locked(deadline.room_id)
+            return changed
 
     def _lock_for(self, room_id: RoomId) -> asyncio.Lock:
         lock = self._room_locks.get(room_id)
@@ -623,7 +929,12 @@ class RealtimeRoomCoordinator:
             return
         self.registry.enqueue(session, StateMessage(snapshot=room_view_dto(view)))
 
-    async def _dispatch(self, session: SocketSession, command: ClientCommand) -> None:
+    async def _dispatch(
+        self,
+        session: SocketSession,
+        command: ClientCommand,
+        admitted_at_monotonic_ms: int | None = None,
+    ) -> None:
         if isinstance(command, StartHandCommand):
             self._room_service.start_hand(
                 room_id=session.room_id,
@@ -636,6 +947,7 @@ class RealtimeRoomCoordinator:
                 actor=session.guest_id,
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, CheckCommand):
             self._room_service.check(
@@ -643,6 +955,7 @@ class RealtimeRoomCoordinator:
                 actor=session.guest_id,
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, CallCommand):
             self._room_service.call(
@@ -650,6 +963,7 @@ class RealtimeRoomCoordinator:
                 actor=session.guest_id,
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, BetToCommand):
             self._room_service.bet_to(
@@ -658,6 +972,7 @@ class RealtimeRoomCoordinator:
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
                 total=command.total,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, RaiseToCommand):
             self._room_service.raise_to(
@@ -666,6 +981,7 @@ class RealtimeRoomCoordinator:
                 hand_number=command.hand_number,
                 expected_action_sequence=command.expected_action_sequence,
                 total=command.total,
+                admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
         elif isinstance(command, RequestSeatCommand):
             self._room_service.request_seat(

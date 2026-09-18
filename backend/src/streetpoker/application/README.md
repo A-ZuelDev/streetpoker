@@ -68,3 +68,81 @@ settlement, validation, and replace boundary. Phase 9B wraps that application tr
 process-local per-room async serializer shared by all transports. A future
 multi-process deployment will require a different repository/concurrency design; no distributed
 locks, Redis, or persistence are included here.
+
+## Phase 11A transport disconnect and reconnect
+
+Closing or losing a WebSocket removes only its connection-registry entry. It does not call Leave,
+stand a player, remove membership or a seat, change a stack or host authority, or mutate an active
+hand. The same guest token can bind again to the existing membership and receives a new projection
+for that viewer. Leave, Kick, and Close Room remain explicit terminal room mutations with their
+existing authorization rules. A guest who left or was kicked needs a new join; a closed room cannot
+be rejoined. Multiple sockets for one guest remain permitted in 11A, and each receives that guest's
+viewer-specific state. Socket replacement belongs to 11B.
+
+There is no disconnect grace period or automatic standing in 11A. A disconnected seated player
+remains eligible under the existing start-hand rules. An offline current actor can stall an active
+hand because action deadlines and timeout actions belong to 11C. Reconnect is manual, and commands
+are not replayed automatically.
+
+## Phase 11B authoritative socket replacement
+
+One room guest now has one authoritative WebSocket session. A successful same-token bind
+installs the new session under the room coordinator lock, revokes the old session, and sends
+the new socket a fresh viewer-specific state. The old socket closes with policy code 1008
+and a fixed `session ended` reason. Commands from it are ignored, and its late cleanup
+cannot remove the new binding. Leave, Kick, and Close Room still terminate membership or
+the room through their explicit commands. Replacement itself changes no room or poker
+state. Manual reconnect and the Phase 11A disconnect rules otherwise remain in effect.
+
+## Phase 11C action deadlines
+
+RoomService records a 30,000 millisecond deadline for each active turn using an injectable
+clock. Monotonic milliseconds decide expiry; a Unix millisecond timestamp is projected for
+future display. A player action arriving at or after the deadline loses to the server timeout.
+The timeout checks when check is legal and folds otherwise, through the existing hand action
+and settlement path. Reconnect and socket replacement do not change the deadline.
+
+The realtime coordinator schedules one task for each active room turn. Each callback verifies
+room, hand number, action sequence, actor, deadline revision, and actual expiry under the room
+lock. A stale callback changes nothing. Task cancellation only cleans up resources; it does
+not establish correctness. The scheduler and deadlines are process-local, so process restart
+does not recover an in-progress hand. There is no frontend countdown, timebank, or automatic
+reconnect in this phase.
+
+## Phase 11E automatic per-hand timebank
+
+Each hand gives each participant 60,000 milliseconds of process-local timebank. An early
+action keeps that balance for later turns in the same hand. At the 30,000 millisecond base
+deadline, RoomService consumes the actor's full remaining balance and commits an extended
+deadline measured from the original deadline. This transition advances the action sequence
+used for command stale-state protection, so a command sent for the base deadline cannot act
+under the extended deadline. A fresh state lets the player act during the extension. An
+action does not refund consumed timebank. When no balance remains, deadline expiry checks
+or folds through the existing action path. Settlement discards the per-hand balances, and
+the next hand creates fresh balances for its participants.
+
+The coordinator resolves all due transitions under its room lock before admitting a late
+command or sending reconnect state. Old timer tasks are cancelled for cleanup; deadline
+identity and the application balance decide correctness. Viewer snapshots include only the
+current actor's remaining milliseconds and whether that actor is using timebank. The browser
+uses those fields and the projected Unix deadline for display only. Reconnect and socket
+replacement do not replenish a balance or extend a deadline.
+
+## Phase 11F disconnect grace
+
+An unexpected loss of the authoritative socket starts a process-local 60,000 millisecond grace
+period for a seated member. Socket replacement, Leave, Kick, and Close Room do not start grace.
+The current session identity decides whether disconnect cleanup may start grace; a replaced
+socket's late cleanup cannot affect its successor. A same-token reconnect invalidates the pending
+grace before its fresh viewer-specific state is sent. Grace revisions and monotonic expiry are
+checked under the same room lock as commands. Task cancellation cleans resources but is not the
+authority for seat changes.
+
+If grace expires while the room is open, the disconnected member stands using the existing room
+operation. Membership, host identity, and the exact retained stack remain. If a hand is active,
+the member stays in the hand; seat cleanup waits until settlement and occurs only if the member
+remains disconnected. Action deadlines and timebank continue independently throughout grace.
+If a host approves a pending seat request after its member has disconnected, grace starts when
+the offline member becomes seated, so that seat cannot remain occupied indefinitely.
+Grace state and tasks exist only in this process; a restart does not recover them. Reconnect is
+still manual, and no grace or scheduler identifiers appear in the wire projection.
