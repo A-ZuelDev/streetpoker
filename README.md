@@ -139,6 +139,8 @@ or replicas are not supported yet.
 
 See [the private-alpha deployment runbook](docs/private-alpha-deployment.md) for secret handling,
 build and migration commands, TLS/CORS requirements, smoke checks, and the exact operating limits.
+The provider-specific [Railway private-alpha plan](docs/railway-private-alpha.md) freezes the
+Phase 13B topology and settings but does not perform an external deployment.
 
 ## Checks
 
