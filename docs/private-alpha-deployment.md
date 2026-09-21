@@ -99,3 +99,8 @@ phase.
 This checkpoint provides reproducible production packaging and an operator runbook only. It does
 not add persistence, Redis, multi-process coordination, provider-specific infrastructure, DNS,
 TLS certificates, monitoring, backups, or an external deployment.
+
+Phase 13B selects Railway and freezes its service settings without deploying. See
+[the Railway private-alpha plan](railway-private-alpha.md) for the three-service topology,
+variables, migration and healthcheck order, one-replica constraint, cost controls, and the exact
+Phase 13C deployment gate.
