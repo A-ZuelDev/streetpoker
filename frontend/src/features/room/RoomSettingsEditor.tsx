@@ -4,12 +4,14 @@ import {
   roomNameTransportLimit,
   type RoomSettingsPatch,
 } from '../../realtime/roomCommands';
+import { standUpPenaltyPerRecipientMaximum } from '../../realtime/protocolLimits';
 import type { RoomSettingsView } from '../table/table.types';
 
 interface RoomSettingsEditorProps {
   settings: RoomSettingsView;
   roomCode: string;
   handInProgress: boolean;
+  standUpActive?: boolean;
   disabled: boolean;
   savingSettings?: boolean;
   onSave(patch: RoomSettingsPatch): boolean;
@@ -27,6 +29,7 @@ export function RoomSettingsEditor({
   settings,
   roomCode,
   handInProgress,
+  standUpActive = false,
   disabled,
   savingSettings = false,
   onSave,
@@ -39,6 +42,10 @@ export function RoomSettingsEditor({
   );
   const [approvalRequired, setApprovalRequired] = useState(
     settings.seatingApprovalRequired,
+  );
+  const [standUpEnabled, setStandUpEnabled] = useState(settings.standUpEnabled);
+  const [standUpPenalty, setStandUpPenalty] = useState(
+    String(settings.standUpPenaltyPerRecipientChips),
   );
   const [passwordAction, setPasswordAction] = useState<
     'unchanged' | 'set' | 'remove'
@@ -55,6 +62,8 @@ export function RoomSettingsEditor({
       setBigBlind(String(settings.bigBlind));
       setStartingStack(String(settings.defaultStartingStack));
       setApprovalRequired(settings.seatingApprovalRequired);
+      setStandUpEnabled(settings.standUpEnabled);
+      setStandUpPenalty(String(settings.standUpPenaltyPerRecipientChips));
       setPasswordAction('unchanged');
       setPassword('');
       setError(null);
@@ -79,12 +88,17 @@ export function RoomSettingsEditor({
     const stack = handInProgress
       ? settings.defaultStartingStack
       : positiveSafeInteger(startingStack);
+    const penalty = positiveSafeInteger(standUpPenalty);
     if (name.trim().length === 0 || name.length > roomNameTransportLimit) {
       setError('Enter a room name within the transport limit.');
       return;
     }
     if (small === null || big === null || stack === null) {
       setError('Blinds and starting stack must be positive whole numbers.');
+      return;
+    }
+    if (penalty === null || penalty > standUpPenaltyPerRecipientMaximum) {
+      setError('The Stand-Up penalty must be a safe positive whole number.');
       return;
     }
     if (big <= small || stack < big) {
@@ -119,6 +133,12 @@ export function RoomSettingsEditor({
     if (approvalRequired !== settings.seatingApprovalRequired) {
       patch.seating_approval_required = approvalRequired;
     }
+    if (standUpEnabled !== settings.standUpEnabled) {
+      patch.stand_up_enabled = standUpEnabled;
+    }
+    if (penalty !== settings.standUpPenaltyPerRecipientChips) {
+      patch.stand_up_penalty_per_recipient_chips = penalty;
+    }
     if (passwordAction === 'set') {
       patch.password = passwordDraft;
     } else if (passwordAction === 'remove') {
@@ -139,6 +159,7 @@ export function RoomSettingsEditor({
       className="room-settings"
       aria-label="Room settings"
       aria-busy={savingSettings}
+      noValidate
       onSubmit={submit}
     >
       <label>
@@ -199,6 +220,35 @@ export function RoomSettingsEditor({
         />
         Require host approval for seats
       </label>
+      <fieldset className="room-settings__stand-up">
+        <legend>Stand-Up side game</legend>
+        <label className="room-settings__check">
+          <input
+            type="checkbox"
+            checked={standUpEnabled}
+            disabled={disabled}
+            onChange={(event) => setStandUpEnabled(event.currentTarget.checked)}
+          />
+          Enable Stand-Up side game
+        </label>
+        <label>
+          Penalty per player
+          <input
+            type="number"
+            min="1"
+            max={standUpPenaltyPerRecipientMaximum}
+            step="1"
+            value={standUpPenalty}
+            disabled={disabled}
+            onChange={(event) => setStandUpPenalty(event.currentTarget.value)}
+          />
+        </label>
+        <small>
+          {standUpActive
+            ? 'Penalty changes apply next round. Turning Stand-Up off cancels the active round.'
+            : 'When one at-risk player remains, that squid pays each cleared player.'}
+        </small>
+      </fieldset>
       <label>
         Password
         <select

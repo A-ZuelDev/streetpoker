@@ -36,6 +36,7 @@ export interface OccupiedSeatView {
   isDealer: boolean;
   blind: BlindMarker | null;
   cards: readonly CardView[] | 'concealed' | null;
+  standUpStatus?: 'at-risk' | 'cleared' | null;
 }
 
 export interface EmptySeatView {
@@ -136,6 +137,37 @@ export interface HandCompletionView {
   awards: readonly HandCompletionAwardView[];
 }
 
+export interface StandUpRoundView {
+  startHandNumber: number;
+  atRiskSeatNumbers: readonly number[];
+  clearedSeatNumbers: readonly number[];
+}
+
+export interface StandUpResolutionView {
+  kind: 'resolution';
+  handNumber: number;
+  squidSeatNumber: number;
+  intendedTotal: number;
+  actualTotal: number;
+  shortfall: number;
+  transfers: readonly {
+    toSeatNumber: number;
+    chips: number;
+  }[];
+}
+
+export interface StandUpCancellationView {
+  kind: 'cancellation';
+  reason: string;
+}
+
+export interface StandUpView {
+  enabled: boolean;
+  penaltyPerRecipientChips: number;
+  activeRound: StandUpRoundView | null;
+  lastResult: StandUpResolutionView | StandUpCancellationView | null;
+}
+
 export interface MemberView {
   guestId?: string;
   nickname: string;
@@ -162,6 +194,8 @@ export interface RoomSettingsView {
   bigBlind: number;
   defaultStartingStack: number;
   seatingApprovalRequired: boolean;
+  standUpEnabled: boolean;
+  standUpPenaltyPerRecipientChips: number;
   maxSeats: number;
   passwordProtected: boolean;
 }
@@ -186,6 +220,7 @@ export interface RoomPanelView {
   pendingCommand?: RoomPendingView | null;
   controlsDisabled?: boolean;
   handInProgress?: boolean;
+  standUpActive?: boolean;
   settings?: RoomSettingsView;
 }
 
@@ -208,6 +243,7 @@ export interface TableView {
   legalActions: LegalActionsView | null;
   liveActions: LiveActionsView | null;
   handCompletion: HandCompletionView | null;
+  standUp: StandUpView | null;
   roomPanel: RoomPanelView;
   chat: readonly ChatMessageView[] | null;
 }

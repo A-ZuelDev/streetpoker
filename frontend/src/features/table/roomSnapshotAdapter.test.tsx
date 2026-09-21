@@ -85,6 +85,99 @@ describe('roomSnapshotToTableView', () => {
     });
   });
 
+  it('renders authoritative Stand-Up progress and seat badges', () => {
+    const snapshot = activeRoomSnapshot();
+    snapshot.room.settings.stand_up_enabled = true;
+    snapshot.room.settings.stand_up_penalty_per_recipient_chips = 25;
+    snapshot.room.stand_up.active_round = {
+      start_hand_number: 1,
+      last_processed_hand_number: 1,
+      penalty_per_recipient_chips: 25,
+      participants: [
+        { seat_index: 0, is_cleared: false },
+        { seat_index: 1, is_cleared: true },
+        { seat_index: 2, is_cleared: false },
+      ],
+    };
+
+    const table = roomSnapshotToTableView(snapshot, 'guest_host');
+    expect(table.standUp).toMatchObject({
+      enabled: true,
+      penaltyPerRecipientChips: 25,
+      activeRound: {
+        startHandNumber: 1,
+        atRiskSeatNumbers: [1, 3],
+        clearedSeatNumbers: [2],
+      },
+    });
+    expect(table.seats[0]).toMatchObject({ standUpStatus: 'at-risk' });
+    expect(table.seats[1]).toMatchObject({ standUpStatus: 'cleared' });
+    expect(table.seats[2]).toMatchObject({ standUpStatus: 'at-risk' });
+
+    render(<TableScreen table={table} connectionStatus="connected" />);
+    expect(screen.getByLabelText('Stand-Up side game')).toHaveTextContent(
+      '2 at risk · 1 cleared',
+    );
+    expect(screen.getAllByText('At risk')).toHaveLength(2);
+    expect(screen.getByText('Cleared')).toBeInTheDocument();
+  });
+
+  it('renders a seat-only squid payout summary without private identities', () => {
+    const snapshot = completedRoomSnapshot();
+    snapshot.room.settings.stand_up_enabled = true;
+    snapshot.room.settings.stand_up_penalty_per_recipient_chips = 25;
+    snapshot.room.stand_up.last_result = {
+      type: 'resolution',
+      start_hand_number: 1,
+      hand_number: 2,
+      participant_seat_indexes: [0, 1, 2],
+      squid_seat_index: 1,
+      penalty_per_recipient_chips: 25,
+      intended_total: 50,
+      actual_total: 40,
+      shortfall: 10,
+      transfers: [
+        { from_seat_index: 1, to_seat_index: 0, chips: 25 },
+        { from_seat_index: 1, to_seat_index: 2, chips: 15 },
+      ],
+    };
+
+    const table = roomSnapshotToTableView(snapshot, 'guest_host');
+    expect(table.seats[1]).toMatchObject({ standUpStatus: null });
+    render(<TableScreen table={table} connectionStatus="connected" />);
+    expect(screen.getByText('Seat 2 is the squid')).toBeInTheDocument();
+    expect(screen.getByText('Paid 40 of 50')).toBeInTheDocument();
+    expect(screen.getByText('Seat 1 +25')).toBeInTheDocument();
+    expect(screen.getByText('Seat 3 +15')).toBeInTheDocument();
+    expect(JSON.stringify(table.standUp)).not.toContain('guest_');
+    expect(JSON.stringify(table.standUp)).not.toContain('player_id');
+  });
+
+  it('renders an authoritative Stand-Up cancellation reason', () => {
+    const snapshot = completedRoomSnapshot();
+    snapshot.room.stand_up.last_result = {
+      type: 'cancellation',
+      start_hand_number: 1,
+      last_processed_hand_number: 1,
+      participants: [
+        { seat_index: 0, is_cleared: true },
+        { seat_index: 1, is_cleared: false },
+      ],
+      reason: 'disabled',
+    };
+
+    render(
+      <TableScreen
+        table={roomSnapshotToTableView(snapshot, 'guest_host')}
+        connectionStatus="connected"
+      />,
+    );
+    expect(screen.getByText('Round cancelled')).toBeInTheDocument();
+    expect(
+      screen.getByText('The host turned Stand-Up off.'),
+    ).toBeInTheDocument();
+  });
+
   it('conceals an opponent even if an invalid upstream snapshot supplies cards', () => {
     const snapshot = activeRoomSnapshot();
     snapshot.active_hand!.players[1]!.hole_cards = [
