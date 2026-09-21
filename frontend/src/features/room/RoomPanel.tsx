@@ -418,6 +418,7 @@ export function RoomPanel({
                 settings={panel.settings}
                 roomCode={roomCode ?? ''}
                 handInProgress={panel.handInProgress ?? false}
+                standUpActive={panel.standUpActive ?? false}
                 disabled={panel.controlsDisabled ?? true}
                 savingSettings={panel.pendingCommand?.kind === 'settings'}
                 onSave={saveSettings}

@@ -106,7 +106,7 @@ export function PlayerPod({
       <SeatCards seat={seat} />
 
       <div
-        className={`player-pod ${seat.isActing ? 'player-pod--acting' : ''} ${seat.isHero ? 'player-pod--hero' : ''}`}
+        className={`player-pod ${seat.isActing ? 'player-pod--acting' : ''} ${seat.isHero ? 'player-pod--hero' : ''} ${seat.standUpStatus === null || seat.standUpStatus === undefined ? '' : `player-pod--stand-up-${seat.standUpStatus}`}`}
         data-testid={seat.isHero ? 'hero-player-pod' : undefined}
       >
         <div className="player-pod__identity">
@@ -119,6 +119,15 @@ export function PlayerPod({
         </div>
         <span className="player-pod__stack">{formatChips(seat.stack)}</span>
         <span className="player-pod__status">{status}</span>
+
+        {seat.standUpStatus === null ||
+        seat.standUpStatus === undefined ? null : (
+          <span
+            className={`stand-up-badge stand-up-badge--${seat.standUpStatus}`}
+          >
+            {seat.standUpStatus === 'at-risk' ? 'At risk' : 'Cleared'}
+          </span>
+        )}
 
         <span className="player-pod__markers" aria-label="Seat markers">
           {seat.isDealer ? (

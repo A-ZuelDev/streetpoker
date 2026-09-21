@@ -176,6 +176,79 @@
   transform: translate(-50%, -50%);
 }
 
+.stand-up-panel {
+  position: absolute;
+  z-index: 4;
+  top: 22%;
+  left: 50%;
+  display: grid;
+  width: min(22rem, 42vw);
+  gap: 0.28rem;
+  padding: 0.48rem 0.7rem;
+  border: 1px solid rgb(221 183 104 / 34%);
+  border-radius: 0.6rem;
+  color: #dce7e1;
+  background: rgb(5 19 14 / 86%);
+  box-shadow: 0 0.55rem 1.4rem rgb(0 0 0 / 26%);
+  transform: translateX(-50%);
+  font-size: 0.64rem;
+  text-align: center;
+}
+
+.stand-up-panel__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.stand-up-panel__heading strong {
+  color: var(--gold-soft);
+  font-size: 0.7rem;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+
+.stand-up-panel__heading span,
+.stand-up-panel p > span,
+.stand-up-panel__cancelled span {
+  color: #a9bbb1;
+}
+
+.stand-up-panel p {
+  margin: 0;
+}
+
+.stand-up-panel p > span {
+  margin-left: 0.22rem;
+}
+
+.stand-up-panel__result p,
+.stand-up-panel__cancelled {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.38rem;
+}
+
+.stand-up-panel__result ul {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.22rem;
+  padding: 0;
+  margin: 0.28rem 0 0;
+  list-style: none;
+}
+
+.stand-up-panel__result li {
+  padding: 0.13rem 0.34rem;
+  border-radius: 999px;
+  color: #b9eed2;
+  background: rgb(50 199 133 / 12%);
+  font-variant-numeric: tabular-nums;
+}
+
 .table-center__street {
   margin-bottom: 0.55rem;
   color: #b7ccc1;
@@ -499,6 +572,14 @@
     0 0.75rem 1.6rem rgb(0 0 0 / 46%);
 }
 
+.player-pod--stand-up-at-risk {
+  border-color: rgb(223 158 75 / 48%);
+}
+
+.player-pod--stand-up-cleared {
+  border-color: rgb(75 210 145 / 42%);
+}
+
 .player-pod--empty {
   display: flex;
   min-height: 3.65rem;
@@ -614,6 +695,29 @@
   right: -0.52rem;
   display: flex;
   gap: 0.18rem;
+}
+
+.stand-up-badge {
+  position: absolute;
+  top: -0.58rem;
+  left: -0.45rem;
+  padding: 0.18rem 0.42rem;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  background: #151c18;
+  box-shadow: 0 0.22rem 0.5rem rgb(0 0 0 / 35%);
+  font-size: 0.5rem;
+  font-weight: 850;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.stand-up-badge--at-risk {
+  color: #efbd79;
+}
+
+.stand-up-badge--cleared {
+  color: #9ce4bd;
 }
 
 .seat-marker {
@@ -1013,6 +1117,10 @@
   .action-button {
     min-height: 2.8rem;
   }
+
+  .stand-up-panel {
+    top: 20%;
+  }
 }
 
 @media (max-height: 700px) {
@@ -1047,6 +1155,23 @@
 }
 
 @media (max-width: 480px) {
+  .stand-up-panel {
+    top: 20%;
+    width: min(18rem, 64vw);
+  }
+
+  .stand-up-panel__heading,
+  .stand-up-panel__result p,
+  .stand-up-panel__cancelled {
+    flex-direction: column;
+    align-items: center;
+    gap: 0.1rem;
+  }
+
+  .stand-up-panel p > span {
+    margin-left: 0;
+  }
+
   .action-bar {
     grid-template-columns: minmax(6.5rem, 7.5rem) minmax(0, 1fr);
     gap: 0.5rem;

@@ -10,6 +10,7 @@ import type {
   SeatView,
   TableView,
   RoomPendingView,
+  StandUpView,
 } from './table.types';
 import type { ConnectionStatus } from '../../realtime/realtimeStore';
 import type { PendingPokerCommand } from '../../realtime/pokerActions';
@@ -174,6 +175,61 @@ function handCompletionView(
   };
 }
 
+const cancellationLabels = {
+  participant_left: 'A participant left the room.',
+  participant_kicked: 'A participant was removed from the room.',
+  participant_vacated_seat: 'A participant left their poker seat.',
+  participant_busted: 'A participant ran out of chips.',
+  disabled: 'The host turned Stand-Up off.',
+  room_closed: 'The room was closed.',
+} as const;
+
+function standUpView(snapshot: RoomView): StandUpView {
+  const state = snapshot.room.stand_up;
+  const active = state.active_round;
+  const result = state.last_result;
+  return {
+    enabled: snapshot.room.settings.stand_up_enabled,
+    penaltyPerRecipientChips:
+      active?.penalty_per_recipient_chips ??
+      (result?.type === 'resolution'
+        ? result.penalty_per_recipient_chips
+        : snapshot.room.settings.stand_up_penalty_per_recipient_chips),
+    activeRound:
+      active === null
+        ? null
+        : {
+            startHandNumber: active.start_hand_number,
+            atRiskSeatNumbers: active.participants
+              .filter((participant) => !participant.is_cleared)
+              .map((participant) => participant.seat_index + 1),
+            clearedSeatNumbers: active.participants
+              .filter((participant) => participant.is_cleared)
+              .map((participant) => participant.seat_index + 1),
+          },
+    lastResult:
+      result === null
+        ? null
+        : result.type === 'resolution'
+          ? {
+              kind: 'resolution',
+              handNumber: result.hand_number,
+              squidSeatNumber: result.squid_seat_index + 1,
+              intendedTotal: result.intended_total,
+              actualTotal: result.actual_total,
+              shortfall: result.shortfall,
+              transfers: result.transfers.map((transfer) => ({
+                toSeatNumber: transfer.to_seat_index + 1,
+                chips: transfer.chips,
+              })),
+            }
+          : {
+              kind: 'cancellation',
+              reason: cancellationLabels[result.reason],
+            },
+  };
+}
+
 export function roomSnapshotToTableView(
   snapshot: RoomView,
   viewerGuestId: string,
@@ -202,6 +258,13 @@ export function roomSnapshotToTableView(
   );
   const requestedSeatIndexes = new Set(
     snapshot.room.seat_requests.map((request) => request.seat_index),
+  );
+  const standUp = standUpView(snapshot);
+  const activeStandUpBySeat = new Map(
+    snapshot.room.stand_up.active_round?.participants.map((participant) => [
+      participant.seat_index,
+      participant.is_cleared ? ('cleared' as const) : ('at-risk' as const),
+    ]) ?? [],
   );
   const seats = [...snapshot.room.seats]
     .sort((left, right) => left.seat_index - right.seat_index)
@@ -267,6 +330,7 @@ export function roomSnapshotToTableView(
               ? 'big-blind'
               : null,
         cards,
+        standUpStatus: activeStandUpBySeat.get(seat.seat_index) ?? null,
       };
     });
   const viewerHasSeat = seats.some(
@@ -309,6 +373,7 @@ export function roomSnapshotToTableView(
     }),
     handCompletion:
       activeHand === null ? handCompletionView(snapshot.last_hand) : null,
+    standUp,
     roomPanel: {
       members: snapshot.room.members.map((member) =>
         memberView(member, activeByGuest.get(member.guest_id), {
@@ -366,6 +431,7 @@ export function roomSnapshotToTableView(
       pendingCommand: pendingRoomView,
       controlsDisabled: !fresh || commandsPending,
       handInProgress: snapshot.room.status === 'hand_in_progress',
+      standUpActive: standUp.activeRound !== null,
       settings: {
         roomName: snapshot.room.settings.room_name,
         smallBlind: snapshot.room.settings.small_blind,
@@ -373,6 +439,9 @@ export function roomSnapshotToTableView(
         defaultStartingStack: snapshot.room.settings.default_starting_stack,
         seatingApprovalRequired:
           snapshot.room.settings.seating_approval_required,
+        standUpEnabled: snapshot.room.settings.stand_up_enabled,
+        standUpPenaltyPerRecipientChips:
+          snapshot.room.settings.stand_up_penalty_per_recipient_chips,
         maxSeats: snapshot.room.settings.max_seats,
         passwordProtected: snapshot.room.settings.password_protected,
       },

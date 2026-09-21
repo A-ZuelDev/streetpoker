@@ -440,6 +440,27 @@
   height: auto;
 }
 
+.room-settings__stand-up {
+  display: grid;
+  gap: 0.48rem;
+  padding: 0.58rem;
+  border: 1px solid rgb(221 183 104 / 24%);
+  border-radius: 0.45rem;
+}
+
+.room-settings__stand-up legend {
+  padding: 0 0.3rem;
+  color: var(--gold-soft);
+  font-size: 0.61rem;
+  font-weight: 800;
+}
+
+.room-settings__stand-up small {
+  color: var(--room-text-muted);
+  font-size: 0.5rem;
+  line-height: 1.4;
+}
+
 .room-settings > small {
   color: var(--room-text-muted);
   font-size: 0.5rem;

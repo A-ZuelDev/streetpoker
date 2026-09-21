@@ -260,6 +260,8 @@ def test_password_protected_join_and_password_secrecy() -> None:
         "big_blind",
         "default_starting_stack",
         "seating_approval_required",
+        "stand_up_enabled",
+        "stand_up_penalty_per_recipient_chips",
         "max_seats",
         "password_protected",
     }

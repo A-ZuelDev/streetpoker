@@ -46,6 +46,7 @@ export const activeDemoTable = {
         { rank: 'A', suit: 'spades' },
         { rank: 'K', suit: 'hearts' },
       ],
+      standUpStatus: 'at-risk',
     },
     {
       kind: 'occupied',
@@ -60,6 +61,7 @@ export const activeDemoTable = {
       isDealer: true,
       blind: null,
       cards: 'concealed',
+      standUpStatus: 'cleared',
     },
     {
       kind: 'occupied',
@@ -74,6 +76,7 @@ export const activeDemoTable = {
       isDealer: false,
       blind: 'small-blind',
       cards: 'concealed',
+      standUpStatus: 'at-risk',
     },
     {
       kind: 'occupied',
@@ -131,6 +134,16 @@ export const activeDemoTable = {
   },
   liveActions: null,
   handCompletion: null,
+  standUp: {
+    enabled: true,
+    penaltyPerRecipientChips: 200,
+    activeRound: {
+      startHandNumber: 4,
+      atRiskSeatNumbers: [1, 3],
+      clearedSeatNumbers: [2],
+    },
+    lastResult: null,
+  },
   roomPanel: {
     members: [
       { nickname: 'Mara', status: 'Playing', stack: 7_850, isHost: true },
@@ -233,6 +246,7 @@ export const openDemoTable = {
   legalActions: null,
   liveActions: null,
   handCompletion: null,
+  standUp: null,
   roomPanel: {
     members: [
       { nickname: 'Mara', status: 'Seated', stack: 10_000, isHost: true },

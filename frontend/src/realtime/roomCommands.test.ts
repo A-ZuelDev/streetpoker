@@ -7,6 +7,7 @@ import {
   roomCommandSchema,
   safeRoomCommandMessage,
 } from './roomCommands';
+import { standUpPenaltyPerRecipientMaximum } from './protocolLimits';
 
 const valid = [
   { type: 'request_seat', command_id: '1', seat_index: 5 },
@@ -63,6 +64,12 @@ describe('room commands', () => {
       command_id: 'x',
       room_name: 'x'.repeat(roomNameTransportLimit + 1),
     },
+    {
+      type: 'update_settings',
+      command_id: 'x',
+      stand_up_penalty_per_recipient_chips:
+        standUpPenaltyPerRecipientMaximum + 1,
+    },
     { type: 'connect', guest_token: 'A'.repeat(43) },
     {
       type: 'fold',
@@ -83,9 +90,43 @@ describe('room commands', () => {
       big_blind: 200,
       default_starting_stack: 20_000,
       seating_approval_required: false,
+      stand_up_enabled: true,
+      stand_up_penalty_per_recipient_chips: 500,
       password: 'new password',
     };
     expect(roomCommandSchema.parse(command)).toEqual(command);
+  });
+
+  it('builds Stand-Up settings only for the host, including during a hand', () => {
+    const active = activeRoomSnapshot();
+    const request = {
+      type: 'update_settings' as const,
+      patch: {
+        stand_up_enabled: true,
+        stand_up_penalty_per_recipient_chips: 250,
+      },
+    };
+    expect(
+      buildRoomCommand({
+        snapshot: active,
+        guestId: 'guest_host',
+        request,
+        commandId: 'stand-up',
+      }),
+    ).toEqual({
+      type: 'update_settings',
+      command_id: 'stand-up',
+      stand_up_enabled: true,
+      stand_up_penalty_per_recipient_chips: 250,
+    });
+    expect(
+      buildRoomCommand({
+        snapshot: active,
+        guestId: 'guest_alice',
+        request,
+        commandId: 'stand-up',
+      }),
+    ).toBeNull();
   });
 
   it('builds start_hand only from authoritative next_hand_number', () => {

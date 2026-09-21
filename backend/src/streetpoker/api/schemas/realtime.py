@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from streetpoker.application import (
+    MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS,
     ActiveHandPlayerSnapshot,
     ActiveHandSnapshot,
     CallSnapshot,
@@ -19,6 +20,12 @@ from streetpoker.application import (
     RoomViewSnapshot,
     SeatRequestSnapshot,
     SeatSnapshot,
+    StandUpCancellationSnapshot,
+    StandUpParticipantSnapshot,
+    StandUpResolutionSnapshot,
+    StandUpRoundSnapshot,
+    StandUpStateSnapshot,
+    StandUpTransferSnapshot,
     WagerBoundsSnapshot,
     WinnerShareSnapshot,
 )
@@ -34,6 +41,10 @@ PasswordText = Annotated[str, StringConstraints(max_length=128)]
 PositiveInt = Annotated[int, Field(strict=True, ge=1)]
 NonNegativeInt = Annotated[int, Field(strict=True, ge=0)]
 SeatNumber = Annotated[int, Field(strict=True, ge=0, le=5)]
+StandUpPenalty = Annotated[
+    int,
+    Field(strict=True, ge=1, le=MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS),
+]
 
 
 class _StrictInput(BaseModel):
@@ -118,6 +129,8 @@ class UpdateSettingsCommand(_Command):
     big_blind: PositiveInt | None = None
     default_starting_stack: PositiveInt | None = None
     seating_approval_required: bool | None = None
+    stand_up_enabled: bool | None = None
+    stand_up_penalty_per_recipient_chips: StandUpPenalty | None = None
     password: PasswordText | None = None
 
     @model_validator(mode="after")
@@ -128,6 +141,8 @@ class UpdateSettingsCommand(_Command):
             "big_blind",
             "default_starting_stack",
             "seating_approval_required",
+            "stand_up_enabled",
+            "stand_up_penalty_per_recipient_chips",
             "password",
         }
         supplied = setting_fields & self.model_fields_set
@@ -265,6 +280,8 @@ class RoomSettingsDto(_Outbound):
     big_blind: int
     default_starting_stack: int
     seating_approval_required: bool
+    stand_up_enabled: bool
+    stand_up_penalty_per_recipient_chips: int
     max_seats: int
     password_protected: bool
 
@@ -290,6 +307,50 @@ class SeatRequestDto(_Outbound):
     seat_index: int
 
 
+class StandUpParticipantDto(_Outbound):
+    seat_index: int
+    is_cleared: bool
+
+
+class StandUpRoundDto(_Outbound):
+    start_hand_number: int
+    last_processed_hand_number: int
+    penalty_per_recipient_chips: int
+    participants: list[StandUpParticipantDto]
+
+
+class StandUpTransferDto(_Outbound):
+    from_seat_index: int
+    to_seat_index: int
+    chips: int
+
+
+class StandUpResolutionDto(_Outbound):
+    type: Literal["resolution"] = "resolution"
+    start_hand_number: int
+    hand_number: int
+    participant_seat_indexes: list[int]
+    squid_seat_index: int
+    penalty_per_recipient_chips: int
+    intended_total: int
+    actual_total: int
+    shortfall: int
+    transfers: list[StandUpTransferDto]
+
+
+class StandUpCancellationDto(_Outbound):
+    type: Literal["cancellation"] = "cancellation"
+    start_hand_number: int
+    last_processed_hand_number: int
+    participants: list[StandUpParticipantDto]
+    reason: str
+
+
+class StandUpStateDto(_Outbound):
+    active_round: StandUpRoundDto | None
+    last_result: StandUpResolutionDto | StandUpCancellationDto | None
+
+
 class RoomDto(_Outbound):
     room_id: str
     room_code: str
@@ -299,6 +360,7 @@ class RoomDto(_Outbound):
     members: list[MemberDto]
     seats: list[SeatDto]
     seat_requests: list[SeatRequestDto]
+    stand_up: StandUpStateDto
 
 
 class RoomViewDto(_Outbound):
@@ -468,6 +530,8 @@ def _settings(snapshot: RoomSettingsSnapshot) -> RoomSettingsDto:
         big_blind=snapshot.big_blind,
         default_starting_stack=snapshot.default_starting_stack,
         seating_approval_required=snapshot.seating_approval_required,
+        stand_up_enabled=snapshot.stand_up_enabled,
+        stand_up_penalty_per_recipient_chips=(snapshot.stand_up_penalty_per_recipient_chips),
         max_seats=snapshot.max_seats,
         password_protected=snapshot.password_protected,
     )
@@ -500,6 +564,73 @@ def _seat_request(snapshot: SeatRequestSnapshot) -> SeatRequestDto:
     )
 
 
+def _stand_up_participant(snapshot: StandUpParticipantSnapshot) -> StandUpParticipantDto:
+    return StandUpParticipantDto(
+        seat_index=snapshot.seat_index,
+        is_cleared=snapshot.is_cleared,
+    )
+
+
+def _stand_up_round(snapshot: StandUpRoundSnapshot | None) -> StandUpRoundDto | None:
+    if snapshot is None:
+        return None
+    return StandUpRoundDto(
+        start_hand_number=snapshot.start_hand_number,
+        last_processed_hand_number=snapshot.last_processed_hand_number,
+        penalty_per_recipient_chips=snapshot.penalty_per_recipient_chips,
+        participants=[_stand_up_participant(item) for item in snapshot.participants],
+    )
+
+
+def _stand_up_transfer(snapshot: StandUpTransferSnapshot) -> StandUpTransferDto:
+    return StandUpTransferDto(
+        from_seat_index=snapshot.from_seat_index,
+        to_seat_index=snapshot.to_seat_index,
+        chips=snapshot.chips,
+    )
+
+
+def _stand_up_resolution(snapshot: StandUpResolutionSnapshot) -> StandUpResolutionDto:
+    return StandUpResolutionDto(
+        start_hand_number=snapshot.start_hand_number,
+        hand_number=snapshot.hand_number,
+        participant_seat_indexes=list(snapshot.participant_seat_indexes),
+        squid_seat_index=snapshot.squid_seat_index,
+        penalty_per_recipient_chips=snapshot.penalty_per_recipient_chips,
+        intended_total=snapshot.intended_total,
+        actual_total=snapshot.actual_total,
+        shortfall=snapshot.shortfall,
+        transfers=[_stand_up_transfer(item) for item in snapshot.transfers],
+    )
+
+
+def _stand_up_cancellation(
+    snapshot: StandUpCancellationSnapshot,
+) -> StandUpCancellationDto:
+    return StandUpCancellationDto(
+        start_hand_number=snapshot.start_hand_number,
+        last_processed_hand_number=snapshot.last_processed_hand_number,
+        participants=[_stand_up_participant(item) for item in snapshot.participants],
+        reason=snapshot.reason.value,
+    )
+
+
+def _stand_up_state(snapshot: StandUpStateSnapshot) -> StandUpStateDto:
+    result = snapshot.last_result
+    if isinstance(result, StandUpResolutionSnapshot):
+        last_result: StandUpResolutionDto | StandUpCancellationDto | None = _stand_up_resolution(
+            result
+        )
+    elif isinstance(result, StandUpCancellationSnapshot):
+        last_result = _stand_up_cancellation(result)
+    else:
+        last_result = None
+    return StandUpStateDto(
+        active_round=_stand_up_round(snapshot.active_round),
+        last_result=last_result,
+    )
+
+
 def _room(snapshot: RoomSnapshot) -> RoomDto:
     return RoomDto(
         room_id=snapshot.room_id.value,
@@ -510,6 +641,7 @@ def _room(snapshot: RoomSnapshot) -> RoomDto:
         members=[_member(member) for member in snapshot.members],
         seats=[_seat(seat) for seat in snapshot.seats],
         seat_requests=[_seat_request(request) for request in snapshot.seat_requests],
+        stand_up=_stand_up_state(snapshot.stand_up),
     )
 
 

@@ -78,6 +78,10 @@ async def create_room(
             big_blind=payload.settings.big_blind,
             default_starting_stack=payload.settings.default_starting_stack,
             seating_approval_required=payload.settings.seating_approval_required,
+            stand_up_enabled=payload.settings.stand_up_enabled,
+            stand_up_penalty_per_recipient_chips=(
+                payload.settings.stand_up_penalty_per_recipient_chips
+            ),
         )
         created = await coordinator.create_room(
             actor=actor,

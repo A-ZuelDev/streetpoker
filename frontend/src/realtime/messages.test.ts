@@ -6,6 +6,7 @@ import {
   openRoomSnapshot,
 } from '../test/roomSnapshots';
 import { connectFrameSchema, serverMessageSchema } from './messages';
+import { standUpPenaltyPerRecipientMaximum } from './protocolLimits';
 
 describe('serverMessageSchema', () => {
   it.each([
@@ -73,6 +74,65 @@ describe('serverMessageSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts seat-oriented Stand-Up state and rejects internal identities', () => {
+    const snapshot = activeRoomSnapshot();
+    snapshot.room.settings.stand_up_enabled = true;
+    snapshot.room.settings.stand_up_penalty_per_recipient_chips = 25;
+    snapshot.room.stand_up.active_round = {
+      start_hand_number: 1,
+      last_processed_hand_number: 0,
+      penalty_per_recipient_chips: 25,
+      participants: [
+        { seat_index: 0, is_cleared: false },
+        { seat_index: 1, is_cleared: true },
+        { seat_index: 2, is_cleared: false },
+      ],
+    };
+    snapshot.room.stand_up.last_result = {
+      type: 'resolution',
+      start_hand_number: 1,
+      hand_number: 2,
+      participant_seat_indexes: [0, 1, 2],
+      squid_seat_index: 2,
+      penalty_per_recipient_chips: 25,
+      intended_total: 50,
+      actual_total: 50,
+      shortfall: 0,
+      transfers: [
+        { from_seat_index: 2, to_seat_index: 0, chips: 25 },
+        { from_seat_index: 2, to_seat_index: 1, chips: 25 },
+      ],
+    };
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(true);
+
+    snapshot.room.stand_up.last_result = {
+      type: 'cancellation',
+      start_hand_number: 3,
+      last_processed_hand_number: 4,
+      participants: [
+        { seat_index: 0, is_cleared: true },
+        { seat_index: 2, is_cleared: false },
+      ],
+      reason: 'disabled',
+    };
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(true);
+
+    const privateState = structuredClone(snapshot) as unknown as {
+      room: { stand_up: { active_round: Record<string, unknown> } };
+    };
+    privateState.room.stand_up.active_round.player_id = 'private-player';
+    expect(
+      serverMessageSchema.safeParse({
+        type: 'state',
+        snapshot: privateState,
+      }).success,
+    ).toBe(false);
+  });
+
   it('rejects unexpected nested fields', () => {
     const snapshot = openRoomSnapshot() as unknown as Record<string, unknown>;
     const room = snapshot.room as Record<string, unknown>;
@@ -91,6 +151,15 @@ describe('serverMessageSchema', () => {
   ])('rejects unsafe integer %s', (value) => {
     const snapshot = activeRoomSnapshot();
     snapshot.active_hand!.pot_chips = value;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(false);
+  });
+
+  it('rejects an unsafe Stand-Up penalty before replacing client state', () => {
+    const snapshot = openRoomSnapshot();
+    snapshot.room.settings.stand_up_penalty_per_recipient_chips =
+      standUpPenaltyPerRecipientMaximum + 1;
     expect(
       serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
     ).toBe(false);

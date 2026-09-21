@@ -9,6 +9,8 @@ const settings = {
   bigBlind: 100,
   defaultStartingStack: 10_000,
   seatingApprovalRequired: true,
+  standUpEnabled: false,
+  standUpPenaltyPerRecipientChips: 100,
   maxSeats: 6,
   passwordProtected: false,
 };
@@ -153,6 +155,63 @@ describe('RoomSettingsEditor', () => {
     expect(
       screen.getByRole('spinbutton', { name: 'Starting stack' }),
     ).toBeDisabled();
+    expect(
+      screen.getByRole('checkbox', { name: 'Enable Stand-Up side game' }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole('spinbutton', { name: 'Penalty per player' }),
+    ).toBeEnabled();
+  });
+
+  it('sends Stand-Up enablement and penalty through the settings patch', () => {
+    const onSave = vi.fn(() => true);
+    render(
+      <RoomSettingsEditor
+        settings={settings}
+        roomCode="ABCDEFGH"
+        handInProgress
+        standUpActive
+        disabled={false}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole('checkbox', { name: 'Enable Stand-Up side game' }),
+    );
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Penalty per player' }),
+      { target: { value: '250' } },
+    );
+    expect(
+      screen.getByText(/Turning Stand-Up off cancels/),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenCalledWith({
+      stand_up_enabled: true,
+      stand_up_penalty_per_recipient_chips: 250,
+    });
+  });
+
+  it('rejects an unsafe Stand-Up penalty locally', () => {
+    const onSave = vi.fn(() => true);
+    render(
+      <RoomSettingsEditor
+        settings={settings}
+        roomCode="ABCDEFGH"
+        handInProgress={false}
+        disabled={false}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Penalty per player' }),
+      { target: { value: '1801439850948200' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'safe positive whole number',
+    );
   });
 
   it('ignores an invalid locked numeric draft for a legal mid-hand update', () => {

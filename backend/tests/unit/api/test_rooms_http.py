@@ -83,6 +83,8 @@ def test_create_room_returns_only_code_and_applies_application_defaults() -> Non
     assert snapshot.settings.big_blind == 100
     assert snapshot.settings.default_starting_stack == 10_000
     assert snapshot.settings.seating_approval_required
+    assert not snapshot.settings.stand_up_enabled
+    assert snapshot.settings.stand_up_penalty_per_recipient_chips == 100
     assert snapshot.settings.max_seats == 6
 
 
@@ -96,6 +98,8 @@ def test_create_room_applies_explicit_settings_and_optional_password() -> None:
             "big_blind": 200,
             "default_starting_stack": 25_000,
             "seating_approval_required": False,
+            "stand_up_enabled": True,
+            "stand_up_penalty_per_recipient_chips": 750,
         },
         password=password,
     )
@@ -112,6 +116,8 @@ def test_create_room_applies_explicit_settings_and_optional_password() -> None:
     assert snapshot.settings.big_blind == 200
     assert snapshot.settings.default_starting_stack == 25_000
     assert not snapshot.settings.seating_approval_required
+    assert snapshot.settings.stand_up_enabled
+    assert snapshot.settings.stand_up_penalty_per_recipient_chips == 750
     assert snapshot.settings.password_protected
 
 
@@ -352,6 +358,26 @@ def test_room_body_limit_does_not_change_unrelated_health_endpoint() -> None:
                 }
             },
             "invalid_settings",
+        ),
+        (
+            {
+                "settings": {
+                    "room_name": "Unsafe Stand-Up",
+                    "stand_up_enabled": True,
+                    "stand_up_penalty_per_recipient_chips": 1_801_439_850_948_199,
+                }
+            },
+            "validation_error",
+        ),
+        (
+            {
+                "settings": {
+                    "room_name": "Invalid Stand-Up",
+                    "stand_up_enabled": True,
+                    "stand_up_penalty_per_recipient_chips": 0,
+                }
+            },
+            "validation_error",
         ),
         ({"password": ""}, "invalid_room_password"),
     ],

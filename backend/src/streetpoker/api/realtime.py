@@ -1034,11 +1034,15 @@ class RealtimeRoomCoordinator:
         supplied = command.model_fields_set
         room_name = command.room_name
         seating_approval = command.seating_approval_required
+        stand_up_enabled = command.stand_up_enabled
+        stand_up_penalty = command.stand_up_penalty_per_recipient_chips
         room_name_value: str | SettingNotProvided
         seating_approval_value: bool | SettingNotProvided
         small_blind_value: int | SettingNotProvided
         big_blind_value: int | SettingNotProvided
         starting_stack_value: int | SettingNotProvided
+        stand_up_enabled_value: bool | SettingNotProvided
+        stand_up_penalty_value: int | SettingNotProvided
         if "room_name" in supplied:
             assert room_name is not None
             room_name_value = room_name
@@ -1067,11 +1071,23 @@ class RealtimeRoomCoordinator:
             starting_stack_value = starting_stack
         else:
             starting_stack_value = SETTING_NOT_PROVIDED
+        if "stand_up_enabled" in supplied:
+            assert stand_up_enabled is not None
+            stand_up_enabled_value = stand_up_enabled
+        else:
+            stand_up_enabled_value = SETTING_NOT_PROVIDED
+        if "stand_up_penalty_per_recipient_chips" in supplied:
+            assert stand_up_penalty is not None
+            stand_up_penalty_value = stand_up_penalty
+        else:
+            stand_up_penalty_value = SETTING_NOT_PROVIDED
         return RoomSettingsUpdate(
             room_name=room_name_value,
             small_blind=small_blind_value,
             big_blind=big_blind_value,
             default_starting_stack=starting_stack_value,
             seating_approval_required=seating_approval_value,
+            stand_up_enabled=stand_up_enabled_value,
+            stand_up_penalty_per_recipient_chips=stand_up_penalty_value,
             password=command.password if "password" in supplied else SETTING_NOT_PROVIDED,
         )

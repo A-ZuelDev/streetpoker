@@ -25,6 +25,8 @@ export interface CreateRoomRequest {
     readonly big_blind: number;
     readonly default_starting_stack: number;
     readonly seating_approval_required: boolean;
+    readonly stand_up_enabled?: boolean;
+    readonly stand_up_penalty_per_recipient_chips?: number;
   };
   readonly password?: string;
 }

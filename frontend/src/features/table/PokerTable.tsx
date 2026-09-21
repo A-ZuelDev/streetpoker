@@ -2,6 +2,7 @@ import { formatChips } from './formatChips';
 import { PlayerPod } from './PlayerPod';
 import { PlayingCard } from './PlayingCard';
 import { TurnCountdown } from './TurnCountdown';
+import { StandUpPanel } from './StandUpPanel';
 import type { SeatView, TableDemoView } from './table.types';
 
 interface PokerTableProps {
@@ -49,6 +50,8 @@ export function PokerTable({ table, isFresh, onRequestSeat }: PokerTableProps) {
           ))}
         </div>
       </div>
+
+      <StandUpPanel standUp={table.standUp} />
 
       <div className="table-center">
         {table.handCompletion === null ? (
