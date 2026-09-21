@@ -130,6 +130,16 @@ Install the Playwright Chromium browser once before running browser tests:
 npm --prefix frontend exec -- playwright install chromium
 ```
 
+## Private-alpha packaging
+
+Provider-neutral production containers and a three-service Compose topology are available for a
+single-process private alpha. The backend intentionally runs one worker because all room and game
+state is held in memory. A backend restart loses every active room, and multiple backend workers
+or replicas are not supported yet.
+
+See [the private-alpha deployment runbook](docs/private-alpha-deployment.md) for secret handling,
+build and migration commands, TLS/CORS requirements, smoke checks, and the exact operating limits.
+
 ## Checks
 
 Start PostgreSQL and apply Alembic before running the complete backend or browser suites.

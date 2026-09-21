@@ -135,8 +135,12 @@ jobs:
 
   compose:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Validate Compose
         run: docker compose config --quiet
+      - name: Validate private-alpha Compose
+        run: docker compose --env-file .env.alpha.example -f compose.alpha.yaml config --quiet
+      - name: Build private-alpha images
+        run: docker compose --env-file .env.alpha.example -f compose.alpha.yaml build backend frontend
