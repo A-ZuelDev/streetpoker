@@ -1,0 +1,54 @@
+name: streetpoker-alpha
+
+services:
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-streetpoker}
+      POSTGRES_USER: ${POSTGRES_USER:-streetpoker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env.alpha}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-streetpoker} -d ${POSTGRES_DB:-streetpoker}
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    stop_grace_period: 20s
+    volumes:
+      - postgres_alpha_data:/var/lib/postgresql/data
+
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    init: true
+    environment:
+      STREETPOKER_ENVIRONMENT: production
+      STREETPOKER_DATABASE_URL: ${STREETPOKER_DATABASE_URL:?set STREETPOKER_DATABASE_URL in .env.alpha}
+      STREETPOKER_CORS_ORIGINS: ${STREETPOKER_CORS_ORIGINS:?set STREETPOKER_CORS_ORIGINS in .env.alpha}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${BACKEND_BIND_ADDRESS:-127.0.0.1}:${BACKEND_PORT:-8000}:8000"
+    stop_grace_period: 20s
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: ${PUBLIC_API_BASE_URL:?set PUBLIC_API_BASE_URL in .env.alpha}
+    restart: unless-stopped
+    init: true
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${FRONTEND_BIND_ADDRESS:-127.0.0.1}:${FRONTEND_PORT:-8080}:8080"
+    stop_grace_period: 20s
+
+volumes:
+  postgres_alpha_data:
