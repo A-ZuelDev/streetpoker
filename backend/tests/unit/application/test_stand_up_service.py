@@ -6,15 +6,20 @@ from dataclasses import replace
 import pytest
 
 from streetpoker.application import (
+    MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS,
     GuestId,
     InMemoryRoomRepository,
     RoomId,
     RoomService,
     RoomSettings,
+    RoomSettingsUpdate,
+    StandUpCancellationSnapshot,
+    StandUpResolutionSnapshot,
 )
 from streetpoker.application import room_service as room_service_module
 from streetpoker.application.errors import (
     GameplaySettlementError,
+    InvalidRoomSettingsError,
     InvalidRoomStateError,
     NoActiveHandError,
 )
@@ -68,8 +73,9 @@ def make_room(
             room_name="Side Game",
             default_starting_stack=stack,
             seating_approval_required=False,
+            stand_up_enabled=penalty is not None,
+            stand_up_penalty_per_recipient_chips=10 if penalty is None else penalty,
         ),
-        stand_up_penalty_per_recipient_chips=penalty,
     )
     for guest in guests:
         if guest != HOST:
@@ -170,7 +176,7 @@ def test_disabled_room_preserves_poker_only_settlement() -> None:
     }
 
 
-def test_round_freezes_hand_player_ids_seats_and_penalty_without_public_projection() -> None:
+def test_round_freezes_private_ids_but_projects_public_seat_state() -> None:
     service, repository, room_id = make_room(penalty=13)
     start(service, room_id, 1)
     round_state = active_round(repository, room_id)
@@ -182,13 +188,68 @@ def test_round_freezes_hand_player_ids_seats_and_penalty_without_public_projecti
         (player_for(repository, room_id, BOB), 5),
     ]
     public = service.get_room_view(room_id=room_id, viewer=ALICE)
-    assert "stand_up" not in repr(public)
+    assert public.room.settings.stand_up_enabled
+    assert public.room.settings.stand_up_penalty_per_recipient_chips == 13
+    projected = public.room.stand_up.active_round
+    assert projected is not None
+    assert projected.start_hand_number == 1
+    assert projected.last_processed_hand_number == 0
+    assert projected.penalty_per_recipient_chips == 13
+    assert [(item.seat_index, item.is_cleared) for item in projected.participants] == [
+        (0, False),
+        (2, False),
+        (5, False),
+    ]
     assert all(item.player_id.value not in repr(public) for item in round_state.participants)
     assert public.active_hand is not None
     assert all(
         player.hole_cards is None
         for player in public.active_hand.players
         if player.guest_id != ALICE
+    )
+
+
+def test_host_setting_updates_freeze_active_penalty_and_disable_with_cancellation() -> None:
+    service, repository, room_id = make_room(penalty=None)
+    enabled = service.update_room_settings(
+        room_id=room_id,
+        actor=HOST,
+        update=RoomSettingsUpdate(
+            stand_up_enabled=True,
+            stand_up_penalty_per_recipient_chips=17,
+        ),
+    )
+    assert enabled.settings.stand_up_enabled
+    assert enabled.settings.stand_up_penalty_per_recipient_chips == 17
+    start(service, room_id, 1)
+    frozen = active_round(repository, room_id)
+    service.update_room_settings(
+        room_id=room_id,
+        actor=HOST,
+        update=RoomSettingsUpdate(stand_up_penalty_per_recipient_chips=29),
+    )
+    room = repository.get_by_id(room_id)
+    assert room.stand_up_round == frozen
+    assert room.settings.stand_up_penalty_per_recipient_chips == 29
+
+    disabled = service.update_room_settings(
+        room_id=room_id,
+        actor=HOST,
+        update=RoomSettingsUpdate(stand_up_enabled=False),
+    )
+
+    assert disabled.stand_up.active_round is None
+    cancellation = disabled.stand_up.last_result
+    assert isinstance(cancellation, StandUpCancellationSnapshot)
+    assert cancellation.reason is StandUpCancelReason.DISABLED
+    assert [(item.seat_index, item.is_cleared) for item in cancellation.participants] == [
+        (0, False),
+        (2, False),
+        (5, False),
+    ]
+    assert all(
+        participant.player_id.value not in repr(disabled.stand_up)
+        for participant in frozen.participants
     )
 
 
@@ -217,6 +278,20 @@ def test_sole_main_winners_progress_then_resolve_with_separate_conserved_transfe
     }
     view = service.get_room_view(room_id=room_id, viewer=HOST)
     assert view.last_hand is not None
+    public_resolution = view.room.stand_up.last_result
+    assert isinstance(public_resolution, StandUpResolutionSnapshot)
+    assert public_resolution.participant_seat_indexes == (0, 2, 5)
+    assert public_resolution.squid_seat_index == 5
+    assert public_resolution.intended_total == public_resolution.actual_total == 20
+    assert public_resolution.shortfall == 0
+    assert [
+        (item.from_seat_index, item.to_seat_index, item.chips)
+        for item in public_resolution.transfers
+    ] == [(5, 0, 10), (5, 2, 10)]
+    assert all(
+        participant.player_id.value not in repr(public_resolution)
+        for participant in resolved.participants
+    )
     poker_stacks = {
         player_for(repository, room_id, player.guest_id): player.final_stack
         for player in view.last_hand.players
@@ -543,9 +618,17 @@ def test_failure_after_candidate_side_transfer_discards_candidate(
     assert repository.get_by_id(room_id) is before
 
 
-def test_invalid_internal_penalty_is_rejected_at_room_creation() -> None:
-    for bad in (0, -1, True):
-        with pytest.raises(InvalidRoomStateError):
+def test_configured_penalty_preserves_javascript_safe_six_max_totals() -> None:
+    maximum = MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS
+    assert maximum * 5 <= 9_007_199_254_740_991
+    assert (maximum + 1) * 5 > 9_007_199_254_740_991
+    service, _, room_id = make_room(penalty=maximum)
+    settings = service.get_room_snapshot(room_id).settings
+    assert settings.stand_up_enabled
+    assert settings.stand_up_penalty_per_recipient_chips == maximum
+
+    for bad in (0, -1, True, maximum + 1):
+        with pytest.raises(InvalidRoomSettingsError):
             make_room(penalty=bad)
 
 

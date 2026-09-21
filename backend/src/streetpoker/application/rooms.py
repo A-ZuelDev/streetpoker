@@ -44,6 +44,7 @@ from streetpoker.domain import (
     SeatOutOfRangeError,
     StandUpCancellation,
     StandUpCancelReason,
+    StandUpParticipant,
     StandUpResolution,
     StandUpRound,
     TableState,
@@ -56,6 +57,8 @@ MAX_ROOM_NAME_LENGTH = 60
 DEFAULT_SMALL_BLIND = 50
 DEFAULT_BIG_BLIND = 100
 DEFAULT_STARTING_STACK = 10_000
+DEFAULT_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = 100
+MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = 9_007_199_254_740_991 // (SIX_MAX_CAPACITY - 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +173,8 @@ class RoomSettings:
     big_blind: int = DEFAULT_BIG_BLIND
     default_starting_stack: int = DEFAULT_STARTING_STACK
     seating_approval_required: bool = True
+    stand_up_enabled: bool = False
+    stand_up_penalty_per_recipient_chips: int = DEFAULT_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS
     max_seats: int = SIX_MAX_CAPACITY
 
     def __post_init__(self) -> None:
@@ -187,6 +192,15 @@ class RoomSettings:
             )
         if not isinstance(self.seating_approval_required, bool):
             raise InvalidRoomSettingsError("Seating approval must be a boolean.")
+        if not isinstance(self.stand_up_enabled, bool):
+            raise InvalidRoomSettingsError("Stand-Up enablement must be a boolean.")
+        if (
+            not _strict_positive_int(self.stand_up_penalty_per_recipient_chips)
+            or self.stand_up_penalty_per_recipient_chips > MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS
+        ):
+            raise InvalidRoomSettingsError(
+                "Stand-Up penalty must be positive JavaScript-safe whole chips."
+            )
         if (
             not isinstance(self.max_seats, int)
             or isinstance(self.max_seats, bool)
@@ -204,6 +218,8 @@ class RoomSettingsUpdate:
     big_blind: int | SettingNotProvided = SETTING_NOT_PROVIDED
     default_starting_stack: int | SettingNotProvided = SETTING_NOT_PROVIDED
     seating_approval_required: bool | SettingNotProvided = SETTING_NOT_PROVIDED
+    stand_up_enabled: bool | SettingNotProvided = SETTING_NOT_PROVIDED
+    stand_up_penalty_per_recipient_chips: int | SettingNotProvided = SETTING_NOT_PROVIDED
     password: str | SettingNotProvided | None = SETTING_NOT_PROVIDED
 
 
@@ -252,6 +268,8 @@ class RoomSettingsSnapshot:
     big_blind: int
     default_starting_stack: int
     seating_approval_required: bool
+    stand_up_enabled: bool
+    stand_up_penalty_per_recipient_chips: int
     max_seats: int
     password_protected: bool
 
@@ -287,6 +305,69 @@ class SeatRequestSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
+class StandUpParticipantSnapshot:
+    """Seat-only public state for one frozen Stand-Up participant."""
+
+    seat_index: int
+    is_cleared: bool
+
+
+@dataclass(frozen=True, slots=True)
+class StandUpRoundSnapshot:
+    """Public active-round state without internal player identities."""
+
+    start_hand_number: int
+    last_processed_hand_number: int
+    penalty_per_recipient_chips: int
+    participants: tuple[StandUpParticipantSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StandUpTransferSnapshot:
+    """One public seat-to-seat transfer from a resolved round."""
+
+    from_seat_index: int
+    to_seat_index: int
+    chips: int
+
+
+@dataclass(frozen=True, slots=True)
+class StandUpResolutionSnapshot:
+    """Seat-oriented terminal resolution suitable for public transport."""
+
+    start_hand_number: int
+    hand_number: int
+    participant_seat_indexes: tuple[int, ...]
+    squid_seat_index: int
+    penalty_per_recipient_chips: int
+    intended_total: int
+    actual_total: int
+    shortfall: int
+    transfers: tuple[StandUpTransferSnapshot, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class StandUpCancellationSnapshot:
+    """Seat-oriented terminal cancellation suitable for public transport."""
+
+    start_hand_number: int
+    last_processed_hand_number: int
+    participants: tuple[StandUpParticipantSnapshot, ...]
+    reason: StandUpCancelReason
+
+
+StandUpResultSnapshot = StandUpResolutionSnapshot | StandUpCancellationSnapshot
+
+
+@dataclass(frozen=True, slots=True)
+class StandUpStateSnapshot:
+    """Current and most recent terminal Stand-Up state."""
+
+    active_round: StandUpRoundSnapshot | None
+    last_result: StandUpResultSnapshot | None
+
+
+@dataclass(frozen=True, slots=True)
 class RoomSnapshot:
     """Transport-safe immutable room state without poker or password secrets."""
 
@@ -298,6 +379,7 @@ class RoomSnapshot:
     members: tuple[MemberSnapshot, ...]
     seats: tuple[SeatSnapshot, ...]
     seat_requests: tuple[SeatRequestSnapshot, ...]
+    stand_up: StandUpStateSnapshot
 
 
 class _Room:
@@ -316,7 +398,6 @@ class _Room:
         "room_id",
         "seat_requests",
         "settings",
-        "stand_up_penalty_per_recipient_chips",
         "stand_up_round",
         "status",
         "table",
@@ -332,7 +413,6 @@ class _Room:
         password_record: _PasswordRecord | None,
         host_player_id: PlayerId,
         host_nickname: str,
-        stand_up_penalty_per_recipient_chips: int | None = None,
     ) -> None:
         normalized_nickname = normalize_nickname(host_nickname)
         self.room_id = room_id
@@ -344,7 +424,6 @@ class _Room:
         self.table = TableState.six_max()
         self.active_hand: _ActiveHand | None = None
         self.last_hand: _CompletedHandRecord | None = None
-        self.stand_up_penalty_per_recipient_chips = stand_up_penalty_per_recipient_chips
         self.stand_up_round: StandUpRound | None = None
         self.last_stand_up_result: StandUpResolution | StandUpCancellation | None = None
         self.next_hand_number = 1
@@ -374,7 +453,6 @@ class _Room:
         candidate.status = self.status
         candidate.active_hand = None if self.active_hand is None else self.active_hand.copy()
         candidate.last_hand = self.last_hand
-        candidate.stand_up_penalty_per_recipient_chips = self.stand_up_penalty_per_recipient_chips
         candidate.stand_up_round = self.stand_up_round
         candidate.last_stand_up_result = self.last_stand_up_result
         candidate.next_hand_number = self.next_hand_number
@@ -524,6 +602,13 @@ class _Room:
         )
         if self.status is RoomStatus.HAND_IN_PROGRESS and between_hand_changed:
             raise ActiveHandMutationError(operation="change blind or starting-stack settings")
+        if (
+            self.settings.stand_up_enabled
+            and not settings.stand_up_enabled
+            and self.stand_up_round is not None
+        ):
+            self.last_stand_up_result = self.stand_up_round.cancel(StandUpCancelReason.DISABLED)
+            self.stand_up_round = None
         self.settings = settings
         if password_record is not SETTING_NOT_PROVIDED:
             self.password_record = password_record
@@ -545,6 +630,73 @@ class _Room:
         ):
             self.last_stand_up_result = round_state.cancel(reason)
             self.stand_up_round = None
+
+    @staticmethod
+    def _stand_up_participants(
+        participants: tuple[StandUpParticipant, ...],
+        cleared_player_ids: frozenset[PlayerId],
+    ) -> tuple[StandUpParticipantSnapshot, ...]:
+        return tuple(
+            StandUpParticipantSnapshot(
+                seat_index=participant.seat_index.value,
+                is_cleared=participant.player_id in cleared_player_ids,
+            )
+            for participant in participants
+        )
+
+    def _stand_up_snapshot(self) -> StandUpStateSnapshot:
+        active = self.stand_up_round
+        active_snapshot = (
+            None
+            if active is None
+            else StandUpRoundSnapshot(
+                start_hand_number=active.start_hand_number,
+                last_processed_hand_number=active.last_processed_hand_number,
+                penalty_per_recipient_chips=active.penalty_per_recipient_chips,
+                participants=self._stand_up_participants(
+                    active.participants, active.cleared_player_ids
+                ),
+            )
+        )
+        result = self.last_stand_up_result
+        result_snapshot: StandUpResultSnapshot | None
+        if isinstance(result, StandUpResolution):
+            seats_by_player = {
+                participant.player_id: participant.seat_index.value
+                for participant in result.participants
+            }
+            result_snapshot = StandUpResolutionSnapshot(
+                start_hand_number=result.start_hand_number,
+                hand_number=result.hand_number,
+                participant_seat_indexes=tuple(
+                    participant.seat_index.value for participant in result.participants
+                ),
+                squid_seat_index=seats_by_player[result.squid],
+                penalty_per_recipient_chips=result.penalty_per_recipient_chips,
+                intended_total=result.intended_total,
+                actual_total=result.actual_total,
+                shortfall=result.shortfall,
+                transfers=tuple(
+                    StandUpTransferSnapshot(
+                        from_seat_index=seats_by_player[transfer.from_player_id],
+                        to_seat_index=seats_by_player[transfer.to_player_id],
+                        chips=transfer.chips,
+                    )
+                    for transfer in result.transfers
+                ),
+            )
+        elif isinstance(result, StandUpCancellation):
+            result_snapshot = StandUpCancellationSnapshot(
+                start_hand_number=result.start_hand_number,
+                last_processed_hand_number=result.last_processed_hand_number,
+                participants=self._stand_up_participants(
+                    result.participants, result.cleared_player_ids
+                ),
+                reason=result.reason,
+            )
+        else:
+            result_snapshot = None
+        return StandUpStateSnapshot(active_round=active_snapshot, last_result=result_snapshot)
 
     def snapshot(self) -> RoomSnapshot:
         player_to_member = {member.player_id: member for member in self.members.values()}
@@ -604,12 +756,17 @@ class _Room:
                 big_blind=self.settings.big_blind,
                 default_starting_stack=self.settings.default_starting_stack,
                 seating_approval_required=self.settings.seating_approval_required,
+                stand_up_enabled=self.settings.stand_up_enabled,
+                stand_up_penalty_per_recipient_chips=(
+                    self.settings.stand_up_penalty_per_recipient_chips
+                ),
                 max_seats=self.settings.max_seats,
                 password_protected=self.password_record is not None,
             ),
             members=member_snapshots,
             seats=tuple(seat_snapshots),
             seat_requests=request_snapshots,
+            stand_up=self._stand_up_snapshot(),
         )
 
     def validate(self) -> None:
@@ -731,9 +888,6 @@ class _Room:
         member_by_player: dict[PlayerId, _RoomMember],
         table_by_player: dict[PlayerId, Seat],
     ) -> None:
-        penalty = self.stand_up_penalty_per_recipient_chips
-        if penalty is not None and not _strict_positive_int(penalty):
-            raise InvalidRoomStateError("Stand-Up penalty must be positive whole chips.")
         result = self.last_stand_up_result
         if result is not None and not isinstance(result, StandUpResolution | StandUpCancellation):
             raise InvalidRoomStateError("The last Stand-Up result must be terminal and immutable.")
@@ -748,10 +902,10 @@ class _Room:
         round_state = self.stand_up_round
         if round_state is None:
             return
-        if not isinstance(round_state, StandUpRound) or penalty is None:
+        if not isinstance(round_state, StandUpRound) or not self.settings.stand_up_enabled:
             raise InvalidRoomStateError("An active Stand-Up round requires enabled room rules.")
-        if self.status is RoomStatus.CLOSED or round_state.penalty_per_recipient_chips != penalty:
-            raise InvalidRoomStateError("An active Stand-Up round has inconsistent room rules.")
+        if self.status is RoomStatus.CLOSED:
+            raise InvalidRoomStateError("A closed room cannot retain an active Stand-Up round.")
         if result is not None and result_hand >= round_state.start_hand_number:
             raise InvalidRoomStateError("A previous Stand-Up result must precede the active round.")
         expected_processed = (

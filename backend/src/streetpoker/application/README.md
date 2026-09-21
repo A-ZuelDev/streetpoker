@@ -150,9 +150,8 @@ still manual, and no grace or scheduler identifiers appear in the wire projectio
 ## Phase 12C private Stand-Up lifecycle
 
 An optional room-owned Stand-Up round starts from the PlayerIds and seats of the poker hand that
-begins it. For this application-only phase, room creation accepts an internal chip penalty; no
-RoomSettings or wire field exposes it. The round freezes that penalty and its cohort. Later poker
-players may join the hand without joining the active side-game round.
+begins it. The round freezes its penalty and cohort. Later poker players may join the hand without
+joining the active side-game round.
 
 After authoritative Hold'em settlement, RoomService writes poker final stacks to its copied
 candidate table. It adapts the validated pot-index-zero award to the pure Stand-Up hand outcome,
@@ -166,4 +165,19 @@ An unresolved round cancels when a cohort member leaves, is kicked, vacates a po
 at settlement, or the room closes. Transport disconnect alone has no side-game effect. Grace
 cleanup uses the existing stand-up operation after hand settlement, so a completed side-game
 resolution precedes any deferred seat cleanup. A new round can begin only when a later poker
-hand starts. Phase 12D will define host-facing settings and safe projection of side-game state.
+hand starts.
+
+## Phase 12D Stand-Up settings and realtime projection
+
+RoomSettings now owns an explicit enable flag and a positive per-recipient chip penalty. The
+existing host-only settings command can change either value and broadcasts its normal ACK followed
+by viewer-specific STATE. A penalty change affects the next round; an already-active round retains
+its frozen penalty. Disabling the game cancels an unresolved round with the domain's disabled
+reason, including when a poker hand is still in progress.
+
+Room snapshots and realtime DTOs expose only seat-oriented Stand-Up state: frozen participant
+seats and cleared flags, terminal squid and transfer seats, payout totals, and cancellation reason.
+Internal PlayerIds never cross the application projection. Same-token reconnect receives a fresh
+authoritative projection, replaced sockets cannot issue the host command, and disconnect alone
+does not alter a round. Frontend work in this phase is limited to strict Zod compatibility and
+command construction; visible markers, controls, and payout presentation remain Phase 12E.

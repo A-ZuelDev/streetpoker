@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { standUpPenaltyPerRecipientMaximum } from './protocolLimits';
+
 const safeIntegerSchema = z
   .number()
   .refine(Number.isSafeInteger, 'Expected a safe integer.');
@@ -137,6 +139,13 @@ const roomSettingsSchema = z.strictObject({
   big_blind: safeIntegerSchema,
   default_starting_stack: safeIntegerSchema,
   seating_approval_required: z.boolean(),
+  stand_up_enabled: z.boolean(),
+  stand_up_penalty_per_recipient_chips: safeIntegerSchema
+    .refine((value) => value >= 1, 'Expected a positive Stand-Up penalty.')
+    .refine(
+      (value) => value <= standUpPenaltyPerRecipientMaximum,
+      'Expected a six-max safe Stand-Up penalty.',
+    ),
   max_seats: safeIntegerSchema,
   password_protected: z.boolean(),
 });
@@ -162,6 +171,62 @@ const seatRequestSchema = z.strictObject({
   seat_index: seatIndexSchema,
 });
 
+const standUpParticipantSchema = z.strictObject({
+  seat_index: seatIndexSchema,
+  is_cleared: z.boolean(),
+});
+
+const standUpRoundSchema = z.strictObject({
+  start_hand_number: safeIntegerSchema,
+  last_processed_hand_number: safeIntegerSchema,
+  penalty_per_recipient_chips: safeIntegerSchema,
+  participants: z.array(standUpParticipantSchema),
+});
+
+const standUpTransferSchema = z.strictObject({
+  from_seat_index: seatIndexSchema,
+  to_seat_index: seatIndexSchema,
+  chips: safeIntegerSchema,
+});
+
+const standUpResolutionSchema = z.strictObject({
+  type: z.literal('resolution'),
+  start_hand_number: safeIntegerSchema,
+  hand_number: safeIntegerSchema,
+  participant_seat_indexes: z.array(seatIndexSchema),
+  squid_seat_index: seatIndexSchema,
+  penalty_per_recipient_chips: safeIntegerSchema,
+  intended_total: safeIntegerSchema,
+  actual_total: safeIntegerSchema,
+  shortfall: safeIntegerSchema,
+  transfers: z.array(standUpTransferSchema),
+});
+
+const standUpCancellationSchema = z.strictObject({
+  type: z.literal('cancellation'),
+  start_hand_number: safeIntegerSchema,
+  last_processed_hand_number: safeIntegerSchema,
+  participants: z.array(standUpParticipantSchema),
+  reason: z.enum([
+    'participant_left',
+    'participant_kicked',
+    'participant_vacated_seat',
+    'participant_busted',
+    'disabled',
+    'room_closed',
+  ]),
+});
+
+const standUpStateSchema = z.strictObject({
+  active_round: standUpRoundSchema.nullable(),
+  last_result: z
+    .discriminatedUnion('type', [
+      standUpResolutionSchema,
+      standUpCancellationSchema,
+    ])
+    .nullable(),
+});
+
 const roomSchema = z.strictObject({
   room_id: z.string(),
   room_code: roomCodeSchema,
@@ -171,6 +236,7 @@ const roomSchema = z.strictObject({
   members: z.array(memberSchema),
   seats: z.array(seatSchema),
   seat_requests: z.array(seatRequestSchema),
+  stand_up: standUpStateSchema,
 });
 
 export const roomViewSchema = z.strictObject({

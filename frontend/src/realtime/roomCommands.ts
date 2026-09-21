@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import type { RoomView } from './messages';
+import { standUpPenaltyPerRecipientMaximum } from './protocolLimits';
 
 const safeIntegerSchema = z
   .number()
@@ -8,6 +9,10 @@ const safeIntegerSchema = z
 const positiveSafeIntegerSchema = safeIntegerSchema.refine(
   (value) => value >= 1,
   'Expected a positive safe integer.',
+);
+const standUpPenaltySchema = positiveSafeIntegerSchema.refine(
+  (value) => value <= standUpPenaltyPerRecipientMaximum,
+  'Expected a six-max safe Stand-Up penalty.',
 );
 const seatIndexSchema = safeIntegerSchema.refine(
   (value) => value >= 0 && value <= 5,
@@ -63,6 +68,8 @@ const settingKeys = [
   'big_blind',
   'default_starting_stack',
   'seating_approval_required',
+  'stand_up_enabled',
+  'stand_up_penalty_per_recipient_chips',
   'password',
 ] as const;
 
@@ -75,6 +82,8 @@ export const updateSettingsCommandSchema = z
     big_blind: positiveSafeIntegerSchema.optional(),
     default_starting_stack: positiveSafeIntegerSchema.optional(),
     seating_approval_required: z.boolean().optional(),
+    stand_up_enabled: z.boolean().optional(),
+    stand_up_penalty_per_recipient_chips: standUpPenaltySchema.optional(),
     password: z.string().max(128).nullable().optional(),
   })
   .refine(

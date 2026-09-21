@@ -314,7 +314,6 @@ class RoomService:
         nickname: str,
         settings: RoomSettings,
         password: str | None = None,
-        stand_up_penalty_per_recipient_chips: int | None = None,
     ) -> RoomSnapshot:
         password_record = (
             None if password is None else self._password_hasher.hash_password(password)
@@ -328,7 +327,6 @@ class RoomService:
                 password_record=password_record,
                 host_player_id=self._player_id_factory(),
                 host_nickname=nickname,
-                stand_up_penalty_per_recipient_chips=stand_up_penalty_per_recipient_chips,
             )
             snapshot = room.snapshot()
             try:
@@ -498,17 +496,16 @@ class RoomService:
             identities,
             {identity.player_id: PER_HAND_TIMEBANK_MS for identity in identities},
         )
-        if (
-            candidate.stand_up_round is None
-            and candidate.stand_up_penalty_per_recipient_chips is not None
-        ):
+        if candidate.stand_up_round is None and candidate.settings.stand_up_enabled:
             candidate.stand_up_round = StandUpRound.start(
                 start_hand_number=expected_hand_number,
                 participants=(
                     StandUpParticipant(participant.player_id, participant.seat_index)
                     for participant in hand.snapshot.participants
                 ),
-                penalty_per_recipient_chips=candidate.stand_up_penalty_per_recipient_chips,
+                penalty_per_recipient_chips=(
+                    candidate.settings.stand_up_penalty_per_recipient_chips
+                ),
             )
         candidate.active_hand = active
         candidate.next_hand_number += 1
@@ -995,5 +992,15 @@ class RoomService:
                 current.seating_approval_required
                 if update.seating_approval_required is SETTING_NOT_PROVIDED
                 else update.seating_approval_required
+            ),
+            stand_up_enabled=(
+                current.stand_up_enabled
+                if update.stand_up_enabled is SETTING_NOT_PROVIDED
+                else update.stand_up_enabled
+            ),
+            stand_up_penalty_per_recipient_chips=(
+                current.stand_up_penalty_per_recipient_chips
+                if update.stand_up_penalty_per_recipient_chips is SETTING_NOT_PROVIDED
+                else update.stand_up_penalty_per_recipient_chips
             ),
         )

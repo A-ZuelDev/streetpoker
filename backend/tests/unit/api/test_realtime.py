@@ -42,6 +42,7 @@ from streetpoker.application import (
     RoomService,
     RoomSettings,
     StaleHandVersionError,
+    StandUpCancellationSnapshot,
     TurnDeadline,
 )
 from streetpoker.application.rooms import _PasswordRecord
@@ -232,6 +233,12 @@ def test_guest_identity_is_stable_but_does_not_expose_bearer_token() -> None:
         {"type": "leave", "command_id": "11"},
         {"type": "kick", "command_id": "12", "target_guest_id": "guest_target"},
         {"type": "update_settings", "command_id": "13", "password": None},
+        {
+            "type": "update_settings",
+            "command_id": "13b",
+            "stand_up_enabled": True,
+            "stand_up_penalty_per_recipient_chips": 250,
+        },
         {"type": "close_room", "command_id": "14"},
     ],
 )
@@ -249,6 +256,17 @@ def test_client_command_union_accepts_only_current_phase_commands(
         {"type": "request_seat", "command_id": "1", "seat_index": True},
         {"type": "update_settings", "command_id": "1"},
         {"type": "update_settings", "command_id": "1", "room_name": None},
+        {"type": "update_settings", "command_id": "1", "stand_up_enabled": None},
+        {
+            "type": "update_settings",
+            "command_id": "1",
+            "stand_up_penalty_per_recipient_chips": 0,
+        },
+        {
+            "type": "update_settings",
+            "command_id": "1",
+            "stand_up_penalty_per_recipient_chips": 1_801_439_850_948_199,
+        },
     ],
 )
 def test_client_command_union_rejects_unknown_extra_or_ambiguous_input(
@@ -941,6 +959,122 @@ def test_replaced_host_cannot_issue_room_commands_or_remove_new_binding() -> Non
             for message in new_socket.sent
         )
         await coordinator.disconnect(current)
+
+    asyncio.run(scenario())
+
+
+def test_stand_up_host_settings_broadcast_reconnect_and_stale_socket_authority() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        service.request_seat(room_id=room_id, actor=guests["host"], seat_index=0)
+        service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+        coordinator = RealtimeRoomCoordinator(service)
+        host_socket = RecordingWebSocket()
+        host = await coordinator.bind(
+            cast(WebSocket, host_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        alice_socket = RecordingWebSocket()
+        alice = await coordinator.bind(
+            cast(WebSocket, alice_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(2)),
+        )
+        await asyncio.sleep(0)
+
+        await coordinator.handle_command(
+            alice,
+            UpdateSettingsCommand(
+                type="update_settings",
+                command_id="not-host",
+                stand_up_enabled=True,
+                stand_up_penalty_per_recipient_chips=25,
+            ),
+        )
+        await asyncio.sleep(0)
+        assert not service.get_room_snapshot(room_id).settings.stand_up_enabled
+        assert cast(dict[str, object], alice_socket.sent[-1])["code"] == "not_room_host"
+
+        await coordinator.handle_command(
+            host,
+            UpdateSettingsCommand(
+                type="update_settings",
+                command_id="enable",
+                stand_up_enabled=True,
+                stand_up_penalty_per_recipient_chips=25,
+            ),
+        )
+        await asyncio.sleep(0)
+        settings = service.get_room_snapshot(room_id).settings
+        assert settings.stand_up_enabled
+        assert settings.stand_up_penalty_per_recipient_chips == 25
+        assert [cast(dict[str, object], item)["type"] for item in host_socket.sent[-2:]] == [
+            "command_ack",
+            "state",
+        ]
+        assert cast(dict[str, object], alice_socket.sent[-1])["type"] == "state"
+
+        await coordinator.handle_command(
+            host,
+            StartHandCommand(type="start_hand", command_id="start", hand_number=1),
+        )
+        await asyncio.sleep(0)
+        active = service.get_room_snapshot(room_id).stand_up.active_round
+        assert active is not None
+        assert [(item.seat_index, item.is_cleared) for item in active.participants] == [
+            (0, False),
+            (2, False),
+        ]
+
+        replacement_socket = RecordingWebSocket()
+        replacement = await coordinator.bind(
+            cast(WebSocket, replacement_socket),
+            room_code,
+            ConnectRequest(type="connect", guest_token=token(1)),
+        )
+        await asyncio.sleep(0)
+        reconnect_state = cast(dict[str, object], replacement_socket.sent[1])
+        encoded = str(reconnect_state)
+        assert reconnect_state["type"] == "state"
+        assert "private-player" not in encoded
+        assert "player_id" not in encoded
+        assert "guest_token" not in encoded
+
+        await coordinator.handle_command(
+            host,
+            UpdateSettingsCommand(
+                type="update_settings",
+                command_id="stale-disable",
+                stand_up_enabled=False,
+            ),
+        )
+        assert service.get_room_snapshot(room_id).settings.stand_up_enabled
+        await coordinator.disconnect(host)
+        assert coordinator.registry.is_registered(replacement)
+
+        await coordinator.handle_command(
+            replacement,
+            UpdateSettingsCommand(
+                type="update_settings",
+                command_id="disable",
+                stand_up_enabled=False,
+            ),
+        )
+        await asyncio.sleep(0)
+        final = service.get_room_view(room_id=room_id, viewer=guests["host"])
+        assert final.active_hand is not None
+        assert not final.room.settings.stand_up_enabled
+        assert final.room.stand_up.active_round is None
+        cancellation = final.room.stand_up.last_result
+        assert isinstance(cancellation, StandUpCancellationSnapshot)
+        assert cancellation.reason.value == "disabled"
+
+        await coordinator.disconnect(alice)
+        await coordinator.disconnect(replacement)
+        await coordinator.shutdown()
 
     asyncio.run(scenario())
 
