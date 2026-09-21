@@ -125,7 +125,7 @@ describe('roomSnapshotToTableView', () => {
   it('renders a seat-only squid payout summary without private identities', () => {
     const snapshot = completedRoomSnapshot();
     snapshot.room.settings.stand_up_enabled = true;
-    snapshot.room.settings.stand_up_penalty_per_recipient_chips = 25;
+    snapshot.room.settings.stand_up_penalty_per_recipient_chips = 75;
     snapshot.room.stand_up.last_result = {
       type: 'resolution',
       start_hand_number: 1,
@@ -143,8 +143,12 @@ describe('roomSnapshotToTableView', () => {
     };
 
     const table = roomSnapshotToTableView(snapshot, 'guest_host');
+    expect(table.standUp?.penaltyPerRecipientChips).toBe(25);
     expect(table.seats[1]).toMatchObject({ standUpStatus: null });
     render(<TableScreen table={table} connectionStatus="connected" />);
+    expect(screen.getByLabelText('Stand-Up side game')).toHaveTextContent(
+      '25 per player',
+    );
     expect(screen.getByText('Seat 2 is the squid')).toBeInTheDocument();
     expect(screen.getByText('Paid 40 of 50')).toBeInTheDocument();
     expect(screen.getByText('Seat 1 +25')).toBeInTheDocument();

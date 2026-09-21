@@ -192,7 +192,9 @@ function standUpView(snapshot: RoomView): StandUpView {
     enabled: snapshot.room.settings.stand_up_enabled,
     penaltyPerRecipientChips:
       active?.penalty_per_recipient_chips ??
-      snapshot.room.settings.stand_up_penalty_per_recipient_chips,
+      (result?.type === 'resolution'
+        ? result.penalty_per_recipient_chips
+        : snapshot.room.settings.stand_up_penalty_per_recipient_chips),
     activeRound:
       active === null
         ? null

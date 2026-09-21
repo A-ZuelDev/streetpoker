@@ -41,8 +41,10 @@ from streetpoker.application import (
     RoomId,
     RoomService,
     RoomSettings,
+    RoomSettingsUpdate,
     StaleHandVersionError,
     StandUpCancellationSnapshot,
+    StandUpResolutionSnapshot,
     TurnDeadline,
 )
 from streetpoker.application.rooms import _PasswordRecord
@@ -1029,6 +1031,19 @@ def test_stand_up_host_settings_broadcast_reconnect_and_stale_socket_authority()
             (2, False),
         ]
 
+        await coordinator.handle_command(
+            host,
+            UpdateSettingsCommand(
+                type="update_settings",
+                command_id="next-round-penalty",
+                stand_up_penalty_per_recipient_chips=40,
+            ),
+        )
+        current = service.get_room_snapshot(room_id)
+        assert current.settings.stand_up_penalty_per_recipient_chips == 40
+        assert current.stand_up.active_round is not None
+        assert current.stand_up.active_round.penalty_per_recipient_chips == 25
+
         replacement_socket = RecordingWebSocket()
         replacement = await coordinator.bind(
             cast(WebSocket, replacement_socket),
@@ -1055,14 +1070,12 @@ def test_stand_up_host_settings_broadcast_reconnect_and_stale_socket_authority()
         await coordinator.disconnect(host)
         assert coordinator.registry.is_registered(replacement)
 
-        await coordinator.handle_command(
-            replacement,
-            UpdateSettingsCommand(
-                type="update_settings",
-                command_id="disable",
-                stand_up_enabled=False,
-            ),
+        disable = UpdateSettingsCommand(
+            type="update_settings",
+            command_id="disable",
+            stand_up_enabled=False,
         )
+        await coordinator.handle_command(replacement, disable)
         await asyncio.sleep(0)
         final = service.get_room_view(room_id=room_id, viewer=guests["host"])
         assert final.active_hand is not None
@@ -1071,6 +1084,11 @@ def test_stand_up_host_settings_broadcast_reconnect_and_stale_socket_authority()
         cancellation = final.room.stand_up.last_result
         assert isinstance(cancellation, StandUpCancellationSnapshot)
         assert cancellation.reason.value == "disabled"
+
+        await coordinator.handle_command(replacement, disable)
+        replayed = service.get_room_view(room_id=room_id, viewer=guests["host"])
+        assert replayed.room.stand_up.active_round is None
+        assert replayed.room.stand_up.last_result == cancellation
 
         await coordinator.disconnect(alice)
         await coordinator.disconnect(replacement)
@@ -1239,13 +1257,24 @@ def test_queued_old_command_loses_when_replacement_acquires_room_lock_first() ->
     asyncio.run(scenario())
 
 
-def started_timed_service() -> tuple[RoomService, RoomId, dict[str, GuestId], FakeClock]:
+def started_timed_service(
+    *, stand_up_penalty: int | None = None
+) -> tuple[RoomService, RoomId, dict[str, GuestId], FakeClock]:
     clock = FakeClock()
     service, room_id, guests = built_service(clock=clock)
     room_code = service.get_room_snapshot(room_id).room_code
     service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
     service.request_seat(room_id=room_id, actor=guests["host"], seat_index=0)
     service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+    if stand_up_penalty is not None:
+        service.update_room_settings(
+            room_id=room_id,
+            actor=guests["host"],
+            update=RoomSettingsUpdate(
+                stand_up_enabled=True,
+                stand_up_penalty_per_recipient_chips=stand_up_penalty,
+            ),
+        )
     started = service.start_hand(room_id=room_id, actor=guests["host"], expected_hand_number=1)
     assert started.active_hand is not None
     return service, room_id, guests, clock
@@ -2190,6 +2219,73 @@ def test_grace_expiry_during_hand_defers_stand_until_timeout_settlement() -> Non
         await coordinator.shutdown()
         assert coordinator._graces == {}
         assert coordinator._grace_tasks == set()
+
+    asyncio.run(scenario())
+
+
+def test_stand_up_resolution_precedes_deferred_disconnect_cleanup_and_reconnects() -> None:
+    async def scenario() -> None:
+        service, room_id, guests, clock = started_timed_service(stand_up_penalty=25)
+        coordinator = RealtimeRoomCoordinator(service)
+        base = current_deadline(service, room_id)
+        actor_fill = 1 if base.actor == guests["host"] else 2
+        other_fill = 2 if actor_fill == 1 else 1
+        actor, _ = await bind_existing_guest(coordinator, service, room_id, actor_fill)
+        other, _ = await bind_existing_guest(coordinator, service, room_id, other_fill)
+        before = service.get_room_snapshot(room_id)
+        actor_seat = next(seat.seat_index for seat in before.seats if seat.guest_id == base.actor)
+        other_seat = next(
+            seat.seat_index for seat in before.seats if seat.guest_id == other.guest_id
+        )
+
+        await coordinator.disconnect(actor)
+        grace = coordinator._graces[(room_id, base.actor)].deadline
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(base)
+        extended = current_deadline(service, room_id)
+
+        clock.advance(30_000)
+        assert await coordinator.expire_grace(grace) is False
+        assert coordinator._graces[(room_id, base.actor)].expired
+
+        clock.advance(30_000)
+        assert await coordinator.expire_turn(extended)
+        settled = service.get_room_snapshot(room_id)
+        result = settled.stand_up.last_result
+        assert settled.status.value == "open"
+        assert settled.stand_up.active_round is None
+        assert isinstance(result, StandUpResolutionSnapshot)
+        assert result.squid_seat_index == actor_seat
+        assert result.actual_total == 25
+        assert result.shortfall == 0
+        assert [
+            (item.from_seat_index, item.to_seat_index, item.chips) for item in result.transfers
+        ] == [(actor_seat, other_seat, 25)]
+        assert all(seat.guest_id != base.actor for seat in settled.seats)
+        assert sum(member.stack or 0 for member in settled.members) == 2_000
+        assert (room_id, base.actor) not in coordinator._graces
+
+        retained = tuple((member.guest_id, member.stack) for member in settled.members)
+        assert await coordinator.expire_grace(grace) is False
+        after_replay = service.get_room_snapshot(room_id)
+        assert after_replay.stand_up.last_result == result
+        assert tuple((member.guest_id, member.stack) for member in after_replay.members) == retained
+
+        reconnected, socket = await bind_existing_guest(coordinator, service, room_id, actor_fill)
+        state = cast(dict[str, object], socket.sent[1])
+        room = cast(dict[str, object], cast(dict[str, object], state["snapshot"])["room"])
+        stand_up = cast(dict[str, object], room["stand_up"])
+        public_result = cast(dict[str, object], stand_up["last_result"])
+        assert public_result["type"] == "resolution"
+        assert public_result["squid_seat_index"] == actor_seat
+        encoded = str(public_result)
+        assert "private-player" not in encoded
+        assert "player_id" not in encoded
+        assert "guest_id" not in encoded
+
+        await coordinator.disconnect(reconnected)
+        await coordinator.disconnect(other)
+        await coordinator.shutdown()
 
     asyncio.run(scenario())
 
