@@ -458,6 +458,25 @@ def test_start_and_every_gameplay_action_route_with_authoritative_versions() -> 
     assert final_state["snapshot"]["last_hand"] is not None
 
 
+def test_host_pause_and_resume_route_through_websocket_protocol() -> None:
+    service, _, tokens, _ = built_service(join_alice=True, seat_players=True)
+
+    with app_client(service) as client, client.websocket_connect("/ws/rooms/ABCDEFGH") as host:
+        handshake(host, tokens["host"])
+        host.send_json({"type": "start_hand", "command_id": "start", "hand_number": 1})
+        receive_ack_and_state(host, "start")
+
+        host.send_json({"type": "pause_game", "command_id": "pause"})
+        paused = receive_ack_and_state(host, "pause")
+        assert paused["snapshot"]["room"]["is_paused"] is True
+        assert paused["snapshot"]["active_hand"]["action_deadline_unix_ms"] is None
+
+        host.send_json({"type": "resume_game", "command_id": "resume"})
+        resumed = receive_ack_and_state(host, "resume")
+        assert resumed["snapshot"]["room"]["is_paused"] is False
+        assert isinstance(resumed["snapshot"]["active_hand"]["action_deadline_unix_ms"], int)
+
+
 def test_nonhost_start_is_rejected_without_state_broadcast() -> None:
     service, _, tokens, _ = built_service(join_alice=True, seat_players=True)
 
