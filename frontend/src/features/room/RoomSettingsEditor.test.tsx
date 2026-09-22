@@ -11,6 +11,10 @@ const settings = {
   seatingApprovalRequired: true,
   standUpEnabled: false,
   standUpPenaltyPerRecipientChips: 100,
+  actionTimeMs: 30_000,
+  timebankTotalMs: 60_000,
+  timebankRefillAmountMs: 60_000,
+  timebankRefillEveryHands: 1,
   maxSeats: 6,
   passwordProtected: false,
 };
@@ -32,6 +36,42 @@ describe('RoomSettingsEditor', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
     expect(onSave).toHaveBeenCalledWith({ room_name: 'Saturday Night' });
+  });
+
+  it('sends validated timer and additive refill settings in milliseconds', () => {
+    const onSave = vi.fn(() => true);
+    render(
+      <RoomSettingsEditor
+        settings={settings}
+        roomCode="ABCDEFGH"
+        handInProgress={false}
+        disabled={false}
+        onSave={onSave}
+      />,
+    );
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Decision time (seconds)' }),
+      { target: { value: '45' } },
+    );
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Time-bank total (seconds)' }),
+      { target: { value: '90' } },
+    );
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Refill amount (seconds)' }),
+      { target: { value: '15' } },
+    );
+    fireEvent.change(
+      screen.getByRole('spinbutton', { name: 'Refill every (hands)' }),
+      { target: { value: '3' } },
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Save settings' }));
+    expect(onSave).toHaveBeenCalledWith({
+      action_time_ms: 45_000,
+      timebank_total_ms: 90_000,
+      timebank_refill_amount_ms: 15_000,
+      timebank_refill_every_hands: 3,
+    });
   });
 
   it('reconciles a successful no-op-normalized draft after pending clears', () => {
@@ -154,6 +194,12 @@ describe('RoomSettingsEditor', () => {
     ).toBeDisabled();
     expect(
       screen.getByRole('spinbutton', { name: 'Starting stack' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('spinbutton', { name: 'Decision time (seconds)' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('spinbutton', { name: 'Time-bank total (seconds)' }),
     ).toBeDisabled();
     expect(
       screen.getByRole('checkbox', { name: 'Enable Stand-Up side game' }),

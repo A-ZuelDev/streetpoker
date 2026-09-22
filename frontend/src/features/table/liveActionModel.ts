@@ -24,6 +24,7 @@ interface LiveActionModelOptions {
   readonly roomPendingLabel?: string | null;
   readonly viewerIsHost?: boolean;
   readonly hasCompletedHand: boolean;
+  readonly isPaused?: boolean;
 }
 
 function waitingModel(
@@ -104,6 +105,7 @@ export function deriveLiveActionModel(
     roomPendingLabel = null,
     viewerIsHost = false,
     hasCompletedHand,
+    isPaused = false,
   } = options;
 
   if (connectionStatus === 'connecting' || connectionStatus === 'syncing') {
@@ -140,6 +142,13 @@ export function deriveLiveActionModel(
     return roomCommandPending
       ? { ...result, pending: true, pendingSource: 'room' }
       : result;
+  }
+  if (isPaused) {
+    return waitingModel(
+      'paused',
+      'Game paused',
+      'Waiting for the host to resume',
+    );
   }
   if (!legalActionFactsAreConsistent(activeHand)) {
     return waitingModel(

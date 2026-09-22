@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import {
+  actionTimeMaximumMs,
+  actionTimeMinimumMs,
   roomNameTransportLimit,
+  timebankMaximumMs,
+  timebankRefillHandsMaximum,
   type RoomSettingsPatch,
 } from '../../realtime/roomCommands';
 import { standUpPenaltyPerRecipientMaximum } from '../../realtime/protocolLimits';
@@ -25,6 +29,14 @@ function positiveSafeInteger(value: string): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+function nonnegativeSafeInteger(value: string): number | null {
+  if (!/^\d+$/.test(value)) {
+    return null;
+  }
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : null;
+}
+
 export function RoomSettingsEditor({
   settings,
   roomCode,
@@ -39,6 +51,18 @@ export function RoomSettingsEditor({
   const [bigBlind, setBigBlind] = useState(String(settings.bigBlind));
   const [startingStack, setStartingStack] = useState(
     String(settings.defaultStartingStack),
+  );
+  const [actionTimeSeconds, setActionTimeSeconds] = useState(
+    String(settings.actionTimeMs / 1_000),
+  );
+  const [timebankTotalSeconds, setTimebankTotalSeconds] = useState(
+    String(settings.timebankTotalMs / 1_000),
+  );
+  const [timebankRefillSeconds, setTimebankRefillSeconds] = useState(
+    String(settings.timebankRefillAmountMs / 1_000),
+  );
+  const [timebankRefillHands, setTimebankRefillHands] = useState(
+    String(settings.timebankRefillEveryHands),
   );
   const [approvalRequired, setApprovalRequired] = useState(
     settings.seatingApprovalRequired,
@@ -61,6 +85,10 @@ export function RoomSettingsEditor({
       setSmallBlind(String(settings.smallBlind));
       setBigBlind(String(settings.bigBlind));
       setStartingStack(String(settings.defaultStartingStack));
+      setActionTimeSeconds(String(settings.actionTimeMs / 1_000));
+      setTimebankTotalSeconds(String(settings.timebankTotalMs / 1_000));
+      setTimebankRefillSeconds(String(settings.timebankRefillAmountMs / 1_000));
+      setTimebankRefillHands(String(settings.timebankRefillEveryHands));
       setApprovalRequired(settings.seatingApprovalRequired);
       setStandUpEnabled(settings.standUpEnabled);
       setStandUpPenalty(String(settings.standUpPenaltyPerRecipientChips));
@@ -88,6 +116,18 @@ export function RoomSettingsEditor({
     const stack = handInProgress
       ? settings.defaultStartingStack
       : positiveSafeInteger(startingStack);
+    const actionTime = handInProgress
+      ? settings.actionTimeMs
+      : (positiveSafeInteger(actionTimeSeconds) ?? 0) * 1_000;
+    const timebankTotal = handInProgress
+      ? settings.timebankTotalMs
+      : (nonnegativeSafeInteger(timebankTotalSeconds) ?? -1) * 1_000;
+    const timebankRefill = handInProgress
+      ? settings.timebankRefillAmountMs
+      : (nonnegativeSafeInteger(timebankRefillSeconds) ?? -1) * 1_000;
+    const refillHands = handInProgress
+      ? settings.timebankRefillEveryHands
+      : positiveSafeInteger(timebankRefillHands);
     const penalty = positiveSafeInteger(standUpPenalty);
     if (name.trim().length === 0 || name.length > roomNameTransportLimit) {
       setError('Enter a room name within the transport limit.');
@@ -104,6 +144,21 @@ export function RoomSettingsEditor({
     if (big <= small || stack < big) {
       setError(
         'The big blind must exceed the small blind, and the stack must cover it.',
+      );
+      return;
+    }
+    if (
+      actionTime < actionTimeMinimumMs ||
+      actionTime > actionTimeMaximumMs ||
+      timebankTotal < 0 ||
+      timebankTotal > timebankMaximumMs ||
+      timebankRefill < 0 ||
+      timebankRefill > timebankTotal ||
+      refillHands === null ||
+      refillHands > timebankRefillHandsMaximum
+    ) {
+      setError(
+        'Use 5–120 seconds for action time, 0–300 seconds for the bank, a refill no larger than the bank, and 1–100 hands for cadence.',
       );
       return;
     }
@@ -129,6 +184,18 @@ export function RoomSettingsEditor({
     }
     if (!handInProgress && stack !== settings.defaultStartingStack) {
       patch.default_starting_stack = stack;
+    }
+    if (!handInProgress && actionTime !== settings.actionTimeMs) {
+      patch.action_time_ms = actionTime;
+    }
+    if (!handInProgress && timebankTotal !== settings.timebankTotalMs) {
+      patch.timebank_total_ms = timebankTotal;
+    }
+    if (!handInProgress && timebankRefill !== settings.timebankRefillAmountMs) {
+      patch.timebank_refill_amount_ms = timebankRefill;
+    }
+    if (!handInProgress && refillHands !== settings.timebankRefillEveryHands) {
+      patch.timebank_refill_every_hands = refillHands;
     }
     if (approvalRequired !== settings.seatingApprovalRequired) {
       patch.seating_approval_required = approvalRequired;
@@ -207,10 +274,73 @@ export function RoomSettingsEditor({
         />
       </label>
       {handInProgress ? (
-        <small>
-          Blind and starting-stack changes wait until between hands.
-        </small>
+        <small>Blind, stack, and timer changes wait until between hands.</small>
       ) : null}
+      <fieldset className="room-settings__stand-up">
+        <legend>Action timer and time bank</legend>
+        <label>
+          Decision time (seconds)
+          <input
+            type="number"
+            min={actionTimeMinimumMs / 1_000}
+            max={actionTimeMaximumMs / 1_000}
+            step="1"
+            value={actionTimeSeconds}
+            disabled={disabled || handInProgress}
+            onChange={(event) =>
+              setActionTimeSeconds(event.currentTarget.value)
+            }
+          />
+        </label>
+        <label>
+          Time-bank total (seconds)
+          <input
+            type="number"
+            min="0"
+            max={timebankMaximumMs / 1_000}
+            step="1"
+            value={timebankTotalSeconds}
+            disabled={disabled || handInProgress}
+            onChange={(event) =>
+              setTimebankTotalSeconds(event.currentTarget.value)
+            }
+          />
+        </label>
+        <div className="room-settings__numbers">
+          <label>
+            Refill amount (seconds)
+            <input
+              type="number"
+              min="0"
+              max={timebankMaximumMs / 1_000}
+              step="1"
+              value={timebankRefillSeconds}
+              disabled={disabled || handInProgress}
+              onChange={(event) =>
+                setTimebankRefillSeconds(event.currentTarget.value)
+              }
+            />
+          </label>
+          <label>
+            Refill every (hands)
+            <input
+              type="number"
+              min="1"
+              max={timebankRefillHandsMaximum}
+              step="1"
+              value={timebankRefillHands}
+              disabled={disabled || handInProgress}
+              onChange={(event) =>
+                setTimebankRefillHands(event.currentTarget.value)
+              }
+            />
+          </label>
+        </div>
+        <small>
+          Refill is additive up to the total. Set refill to 0 for no automatic
+          refill. Saving time-bank changes resets every member to the new total.
+        </small>
+      </fieldset>
       <label className="room-settings__check">
         <input
           type="checkbox"

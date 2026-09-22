@@ -85,6 +85,37 @@ describe('roomSnapshotToTableView', () => {
     });
   });
 
+  it('renders frozen authoritative time and host resume while paused', () => {
+    const snapshot = activeRoomSnapshot();
+    snapshot.room.is_paused = true;
+    snapshot.active_hand!.action_deadline_unix_ms = null;
+    snapshot.active_hand!.action_timer_remaining_ms = 12_345;
+    const onRoomCommand = vi.fn(() => true);
+    const table = roomSnapshotToTableView(snapshot, 'guest_host');
+
+    expect(table.isPaused).toBe(true);
+    expect(table.liveActions).toMatchObject({ status: 'paused' });
+    expect(table.roomPanel.canPauseGame).toBe(false);
+    expect(table.roomPanel.canResumeGame).toBe(true);
+    render(
+      <TableScreen
+        table={table}
+        connectionStatus="connected"
+        onPokerAction={() => true}
+        onRoomCommand={onRoomCommand}
+      />,
+    );
+    expect(screen.getByRole('timer')).toHaveTextContent('Game paused');
+    expect(screen.getByRole('timer')).toHaveTextContent('13s');
+    expect(
+      within(
+        screen.getByRole('region', { name: 'Table actions' }),
+      ).queryAllByRole('button'),
+    ).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Resume game' }));
+    expect(onRoomCommand).toHaveBeenCalledWith({ type: 'resume_game' });
+  });
+
   it('renders authoritative Stand-Up progress and seat badges', () => {
     const snapshot = activeRoomSnapshot();
     snapshot.room.settings.stand_up_enabled = true;

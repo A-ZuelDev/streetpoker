@@ -27,7 +27,7 @@ describe('TableScreen', () => {
         />,
       );
       const timer = screen.getByRole('timer', {
-        name: 'Approximate turn time remaining',
+        name: 'Authoritative action timer and time bank',
       });
       expect(timer).toHaveTextContent('30s');
 
@@ -96,7 +96,7 @@ describe('TableScreen', () => {
       expect(vi.getTimerCount()).toBe(1);
 
       fresh.active_hand!.action_sequence += 1;
-      fresh.active_hand!.action_deadline_unix_ms += 20_000;
+      fresh.active_hand!.action_deadline_unix_ms! += 20_000;
       view.rerender(
         <TableScreen
           table={roomSnapshotToTableView(fresh, 'guest_host')}
@@ -135,12 +135,12 @@ describe('TableScreen', () => {
       expect(screen.getByRole('timer')).toHaveTextContent(
         'Awaiting table update',
       );
-      expect(screen.queryByText('Timebank')).toBeNull();
+      expect(screen.queryByText('Time bank')).toBeNull();
 
       const extended = structuredClone(base);
       extended.active_hand!.action_sequence += 1;
-      extended.active_hand!.action_deadline_unix_ms += 60_000;
-      extended.active_hand!.current_actor_timebank_ms = 0;
+      extended.active_hand!.action_deadline_unix_ms! += 60_000;
+      extended.active_hand!.current_actor_timebank_ms = 60_000;
       extended.active_hand!.current_actor_using_timebank = true;
       view.rerender(
         <TableScreen
@@ -149,7 +149,7 @@ describe('TableScreen', () => {
         />,
       );
       expect(screen.queryByRole('timer')).toBeNull();
-      expect(screen.queryByText('Timebank')).toBeNull();
+      expect(screen.queryByText('Time bank')).toBeNull();
       view.rerender(
         <TableScreen
           table={roomSnapshotToTableView(extended, 'guest_host')}
@@ -158,10 +158,10 @@ describe('TableScreen', () => {
       );
       expect(
         screen.getByRole('timer', {
-          name: 'Approximate timebank time remaining',
+          name: 'Authoritative action timer and time bank',
         }),
       ).toHaveTextContent('60s');
-      expect(screen.getByText('Timebank')).toBeInTheDocument();
+      expect(screen.getByText('Time bank')).toBeInTheDocument();
       view.unmount();
       expect(vi.getTimerCount()).toBe(0);
     } finally {

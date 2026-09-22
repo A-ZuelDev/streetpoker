@@ -10,6 +10,10 @@ const positiveSafeIntegerSchema = safeIntegerSchema.refine(
   (value) => value >= 1,
   'Expected a positive safe integer.',
 );
+const nonnegativeSafeIntegerSchema = safeIntegerSchema.refine(
+  (value) => value >= 0,
+  'Expected a nonnegative safe integer.',
+);
 const standUpPenaltySchema = positiveSafeIntegerSchema.refine(
   (value) => value <= standUpPenaltyPerRecipientMaximum,
   'Expected a six-max safe Stand-Up penalty.',
@@ -21,6 +25,10 @@ const seatIndexSchema = safeIntegerSchema.refine(
 const commandIdSchema = z.string().trim().min(1).max(64);
 const targetGuestIdSchema = z.string().min(1).max(128);
 export const roomNameTransportLimit = 4_096;
+export const actionTimeMinimumMs = 5_000;
+export const actionTimeMaximumMs = 120_000;
+export const timebankMaximumMs = 300_000;
+export const timebankRefillHandsMaximum = 100;
 
 export const requestSeatCommandSchema = z.strictObject({
   type: z.literal('request_seat'),
@@ -62,11 +70,25 @@ export const startHandCommandSchema = z.strictObject({
   hand_number: positiveSafeIntegerSchema,
 });
 
+export const pauseGameCommandSchema = z.strictObject({
+  type: z.literal('pause_game'),
+  command_id: commandIdSchema,
+});
+
+export const resumeGameCommandSchema = z.strictObject({
+  type: z.literal('resume_game'),
+  command_id: commandIdSchema,
+});
+
 const settingKeys = [
   'room_name',
   'small_blind',
   'big_blind',
   'default_starting_stack',
+  'action_time_ms',
+  'timebank_total_ms',
+  'timebank_refill_amount_ms',
+  'timebank_refill_every_hands',
   'seating_approval_required',
   'stand_up_enabled',
   'stand_up_penalty_per_recipient_chips',
@@ -81,6 +103,19 @@ export const updateSettingsCommandSchema = z
     small_blind: positiveSafeIntegerSchema.optional(),
     big_blind: positiveSafeIntegerSchema.optional(),
     default_starting_stack: positiveSafeIntegerSchema.optional(),
+    action_time_ms: positiveSafeIntegerSchema
+      .refine((value) => value >= actionTimeMinimumMs)
+      .refine((value) => value <= actionTimeMaximumMs)
+      .optional(),
+    timebank_total_ms: nonnegativeSafeIntegerSchema
+      .refine((value) => value <= timebankMaximumMs)
+      .optional(),
+    timebank_refill_amount_ms: nonnegativeSafeIntegerSchema
+      .refine((value) => value <= timebankMaximumMs)
+      .optional(),
+    timebank_refill_every_hands: positiveSafeIntegerSchema
+      .refine((value) => value <= timebankRefillHandsMaximum)
+      .optional(),
     seating_approval_required: z.boolean().optional(),
     stand_up_enabled: z.boolean().optional(),
     stand_up_penalty_per_recipient_chips: standUpPenaltySchema.optional(),
@@ -104,6 +139,8 @@ export const roomCommandSchema = z.discriminatedUnion('type', [
   leaveCommandSchema,
   kickCommandSchema,
   startHandCommandSchema,
+  pauseGameCommandSchema,
+  resumeGameCommandSchema,
   updateSettingsCommandSchema,
   closeRoomCommandSchema,
 ]);
@@ -122,7 +159,13 @@ export type RoomCommandRequest =
       readonly targetGuestId: string;
     }
   | {
-      readonly type: 'stand' | 'leave' | 'start_hand' | 'close_room';
+      readonly type:
+        | 'stand'
+        | 'leave'
+        | 'start_hand'
+        | 'pause_game'
+        | 'resume_game'
+        | 'close_room';
     }
   | {
       readonly type: 'update_settings';
@@ -258,13 +301,27 @@ export function buildRoomCommand(options: {
         ...common,
         hand_number: snapshot.next_hand_number,
       });
+    case 'pause_game':
+      if (!isHost || snapshot.active_hand === null || room.is_paused) {
+        return null;
+      }
+      return roomCommandSchema.parse(common);
+    case 'resume_game':
+      if (!isHost || snapshot.active_hand === null || !room.is_paused) {
+        return null;
+      }
+      return roomCommandSchema.parse(common);
     case 'update_settings': {
       if (
         !isHost ||
         (room.status === 'hand_in_progress' &&
           (Object.hasOwn(request.patch, 'small_blind') ||
             Object.hasOwn(request.patch, 'big_blind') ||
-            Object.hasOwn(request.patch, 'default_starting_stack')))
+            Object.hasOwn(request.patch, 'default_starting_stack') ||
+            Object.hasOwn(request.patch, 'action_time_ms') ||
+            Object.hasOwn(request.patch, 'timebank_total_ms') ||
+            Object.hasOwn(request.patch, 'timebank_refill_amount_ms') ||
+            Object.hasOwn(request.patch, 'timebank_refill_every_hands')))
       ) {
         return null;
       }
@@ -295,6 +352,7 @@ const safeRoomCommandMessages: Record<string, string> = {
   host_cannot_leave: 'The host must close the room instead of leaving.',
   cannot_kick_host: 'The room host cannot be removed.',
   hand_already_active: 'A hand is already in progress.',
+  game_paused: 'The game is paused by the room host.',
   stale_game_state: 'The room changed before the hand could start.',
   insufficient_players: 'At least two eligible seated players are required.',
   cannot_start_hand: 'The room could not start a hand.',

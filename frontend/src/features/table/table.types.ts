@@ -98,7 +98,13 @@ export type LiveWagerView = LiveWagerRangeView | LiveWagerFixedView;
 
 export interface LiveActionsView {
   status:
-    'your-turn' | 'waiting' | 'watching' | 'syncing' | 'disconnected' | 'open';
+    | 'your-turn'
+    | 'waiting'
+    | 'watching'
+    | 'syncing'
+    | 'disconnected'
+    | 'open'
+    | 'paused';
   statusLabel: string;
   statusDetail: string;
   protocolWarning: boolean;
@@ -117,6 +123,8 @@ export type RoomPendingKind =
   | 'leave'
   | 'kick'
   | 'start-hand'
+  | 'pause-game'
+  | 'resume-game'
   | 'settings'
   | 'close-room';
 
@@ -193,6 +201,10 @@ export interface RoomSettingsView {
   smallBlind: number;
   bigBlind: number;
   defaultStartingStack: number;
+  actionTimeMs: number;
+  timebankTotalMs: number;
+  timebankRefillAmountMs: number;
+  timebankRefillEveryHands: number;
   seatingApprovalRequired: boolean;
   standUpEnabled: boolean;
   standUpPenaltyPerRecipientChips: number;
@@ -215,6 +227,9 @@ export interface RoomPanelView {
   canStand?: boolean;
   canLeave?: boolean;
   canCloseRoom?: boolean;
+  canPauseGame?: boolean;
+  canResumeGame?: boolean;
+  isPaused?: boolean;
   showStand?: boolean;
   startHandLabel?: 'Start hand' | 'Start next hand';
   pendingCommand?: RoomPendingView | null;
@@ -235,8 +250,13 @@ export interface TableView {
   isHost: boolean;
   street: string;
   actionDeadlineUnixMs: number | null;
+  actionTimerRemainingMs: number | null;
   currentActorTimebankMs: number | null;
+  currentActorTimebankTotalMs: number | null;
   currentActorUsingTimebank: boolean;
+  timebankRefillAmountMs: number | null;
+  timebankRefillHandsRemaining: number | null;
+  isPaused: boolean;
   pot: number;
   board: readonly CardView[];
   seats: readonly SeatView[];

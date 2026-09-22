@@ -15,6 +15,7 @@ from streetpoker.application.errors import (
     CannotStartHandError,
     DuplicateRoomCodeError,
     DuplicateRoomIdError,
+    GamePausedError,
     GameplaySettlementError,
     HandAlreadyActiveError,
     InsufficientEligiblePlayersError,
@@ -78,8 +79,6 @@ PASSWORD_SALT_BYTES = 16
 MAX_PASSWORD_CHARACTERS = 128
 MAX_PASSWORD_BYTES = 256
 MAX_GENERATION_ATTEMPTS = 32
-BASE_ACTION_TIME_MS = 30_000
-PER_HAND_TIMEBANK_MS = 60_000
 
 
 class PasswordHasher(Protocol):
@@ -489,12 +488,44 @@ class RoomService:
             )
             for participant in hand.snapshot.participants
         )
+        timebank_remaining_ms: dict[PlayerId, int] = {}
+        timebank_hands_until_refill: dict[PlayerId, int | None] = {}
+        for identity in identities:
+            balance = candidate.timebank_balances_ms.get(
+                identity.player_id,
+                candidate.settings.timebank_total_ms,
+            )
+            completed_hands = candidate.timebank_hands_since_refill.get(
+                identity.player_id,
+                0,
+            )
+            if (
+                candidate.settings.timebank_refill_amount_ms > 0
+                and completed_hands >= candidate.settings.timebank_refill_every_hands
+            ):
+                balance = min(
+                    candidate.settings.timebank_total_ms,
+                    balance + candidate.settings.timebank_refill_amount_ms,
+                )
+                completed_hands = 0
+            candidate.timebank_balances_ms[identity.player_id] = balance
+            candidate.timebank_hands_since_refill[identity.player_id] = completed_hands
+            timebank_remaining_ms[identity.player_id] = balance
+            timebank_hands_until_refill[identity.player_id] = (
+                None
+                if candidate.settings.timebank_refill_amount_ms == 0
+                else candidate.settings.timebank_refill_every_hands - completed_hands
+            )
         active = _ActiveHand(
-            expected_hand_number,
-            0,
-            hand,
-            identities,
-            {identity.player_id: PER_HAND_TIMEBANK_MS for identity in identities},
+            hand_number=expected_hand_number,
+            action_sequence=0,
+            hand=hand,
+            identities=identities,
+            timebank_remaining_ms=timebank_remaining_ms,
+            timebank_hands_until_refill=timebank_hands_until_refill,
+            base_action_time_ms=candidate.settings.action_time_ms,
+            timebank_total_ms=candidate.settings.timebank_total_ms,
+            timebank_refill_amount_ms=candidate.settings.timebank_refill_amount_ms,
         )
         if candidate.stand_up_round is None and candidate.settings.stand_up_enabled:
             candidate.stand_up_round = StandUpRound.start(
@@ -518,9 +549,51 @@ class RoomService:
 
     def current_turn_deadline(self, room_id: RoomId) -> TurnDeadline | None:
         room = self._repository.get_by_id(room_id)
-        if room.status is RoomStatus.CLOSED or room.active_hand is None:
+        if room.status is RoomStatus.CLOSED or room.active_hand is None or room.is_paused:
             return None
         return room.active_hand.deadline
+
+    def pause_game(self, *, room_id: RoomId, actor: GuestId) -> RoomViewSnapshot:
+        room = self._host_room(room_id, actor)
+        if room.active_hand is None:
+            raise NoActiveHandError("The room has no active hand.")
+        if room.is_paused:
+            return self._project_view(room, actor)
+        candidate = room.copy()
+        active = candidate.active_hand
+        assert active is not None and active.deadline is not None
+        remaining = max(0, active.deadline.monotonic_ms - self._clock.now_monotonic_ms())
+        active.frozen_remaining_ms = remaining
+        if active.using_timebank:
+            current_player = active.hand.betting_round_snapshot
+            assert current_player is not None and current_player.current_player is not None
+            active.timebank_remaining_ms[current_player.current_player] = remaining
+        candidate.is_paused = True
+        return self._commit_view(candidate, actor)
+
+    def resume_game(self, *, room_id: RoomId, actor: GuestId) -> RoomViewSnapshot:
+        room = self._host_room(room_id, actor)
+        if room.active_hand is None:
+            raise NoActiveHandError("The room has no active hand.")
+        if not room.is_paused:
+            return self._project_view(room, actor)
+        candidate = room.copy()
+        active = candidate.active_hand
+        assert (
+            active is not None
+            and active.deadline is not None
+            and active.frozen_remaining_ms is not None
+        )
+        remaining = active.frozen_remaining_ms
+        active.deadline = replace(
+            active.deadline,
+            revision=active.deadline.revision + 1,
+            monotonic_ms=self._clock.now_monotonic_ms() + remaining,
+            unix_ms=self._clock.now_unix_ms() + remaining,
+        )
+        active.frozen_remaining_ms = None
+        candidate.is_paused = False
+        return self._commit_view(candidate, actor)
 
     def expire_turn(self, expected: TurnDeadline) -> bool:
         """Extend or time out one due turn only when its full identity matches."""
@@ -541,11 +614,10 @@ class RoomService:
             return False
         player_id = current_player.current_player
         remaining = active.timebank_remaining_ms[player_id]
-        if remaining > 0:
+        if remaining > 0 and not active.using_timebank:
             candidate = room.copy()
             extending = candidate.active_hand
             assert extending is not None
-            extending.timebank_remaining_ms[player_id] = 0
             extending.using_timebank = True
             # Advance the command CAS version so a command sent for the base
             # deadline cannot be admitted after this authoritative transition.
@@ -710,6 +782,8 @@ class RoomService:
         active = candidate.active_hand
         if active is None:
             raise NoActiveHandError("The room has no active hand.")
+        if candidate.is_paused:
+            raise GamePausedError("Gameplay is paused by the room host.")
         self._require_hand_number(supplied=hand_number, current=active.hand_number)
         if (
             not isinstance(expected_action_sequence, int)
@@ -741,6 +815,18 @@ class RoomService:
             raise NotCurrentActorError(
                 f"The acting guest is not current; current actor is {current_actor!r}."
             )
+        if active.using_timebank and is_timeout:
+            active.timebank_remaining_ms[identity.player_id] = 0
+        if active.using_timebank and not is_timeout and active.deadline is not None:
+            admitted = (
+                self._clock.now_monotonic_ms()
+                if admitted_at_monotonic_ms is None
+                else admitted_at_monotonic_ms
+            )
+            active.timebank_remaining_ms[identity.player_id] = max(
+                0,
+                active.deadline.monotonic_ms - admitted,
+            )
         operation(active.hand, identity.player_id)
         active.action_sequence += 1
         if active.hand.snapshot.terminal:
@@ -754,14 +840,15 @@ class RoomService:
         assert round_snapshot is not None and round_snapshot.current_player is not None
         previous = active.deadline
         active.using_timebank = False
+        active.frozen_remaining_ms = None
         active.deadline = TurnDeadline(
             room_id=room_id,
             hand_number=active.hand_number,
             action_sequence=active.action_sequence,
             actor=active.identity_for_player(round_snapshot.current_player).guest_id,
             revision=1 if previous is None else previous.revision + 1,
-            monotonic_ms=self._clock.now_monotonic_ms() + BASE_ACTION_TIME_MS,
-            unix_ms=self._clock.now_unix_ms() + BASE_ACTION_TIME_MS,
+            monotonic_ms=self._clock.now_monotonic_ms() + active.base_action_time_ms,
+            unix_ms=self._clock.now_unix_ms() + active.base_action_time_ms,
         )
 
     def _complete_hand(self, candidate: _Room) -> None:
@@ -810,8 +897,15 @@ class RoomService:
                 ),
             )
         self._settle_stand_up(candidate, active, settlement)
+        for player_id in participant_by_id:
+            candidate.timebank_balances_ms[player_id] = active.timebank_remaining_ms[player_id]
+            candidate.timebank_hands_since_refill[player_id] = min(
+                candidate.settings.timebank_refill_every_hands,
+                candidate.timebank_hands_since_refill.get(player_id, 0) + 1,
+            )
         candidate.last_hand = completed
         candidate.active_hand = None
+        candidate.is_paused = False
         candidate.status = RoomStatus.OPEN
 
     @staticmethod
@@ -940,6 +1034,7 @@ class RoomService:
             room.active_hand,
             room.last_hand,
             viewer,
+            paused=room.is_paused,
         )
 
     @staticmethod
@@ -987,6 +1082,26 @@ class RoomService:
                 current.default_starting_stack
                 if update.default_starting_stack is SETTING_NOT_PROVIDED
                 else update.default_starting_stack
+            ),
+            action_time_ms=(
+                current.action_time_ms
+                if update.action_time_ms is SETTING_NOT_PROVIDED
+                else update.action_time_ms
+            ),
+            timebank_total_ms=(
+                current.timebank_total_ms
+                if update.timebank_total_ms is SETTING_NOT_PROVIDED
+                else update.timebank_total_ms
+            ),
+            timebank_refill_amount_ms=(
+                current.timebank_refill_amount_ms
+                if update.timebank_refill_amount_ms is SETTING_NOT_PROVIDED
+                else update.timebank_refill_amount_ms
+            ),
+            timebank_refill_every_hands=(
+                current.timebank_refill_every_hands
+                if update.timebank_refill_every_hands is SETTING_NOT_PROVIDED
+                else update.timebank_refill_every_hands
             ),
             seating_approval_required=(
                 current.seating_approval_required

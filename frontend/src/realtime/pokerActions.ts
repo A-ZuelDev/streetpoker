@@ -199,6 +199,7 @@ export function buildPokerCommand(options: {
   const hand = snapshot.active_hand;
   if (
     hand === null ||
+    snapshot.room.is_paused ||
     guestId !== hand.current_actor ||
     guestId !== hand.legal_actions.actor ||
     !legalActionFactsAreConsistent(hand) ||
@@ -226,6 +227,7 @@ export function buildPokerCommand(options: {
 }
 
 const safeCommandMessages: Record<string, string> = {
+  game_paused: 'The game is paused by the room host.',
   stale_game_state: 'The table changed before your action was accepted.',
   no_active_hand: 'That hand is no longer active.',
   not_current_actor: 'It is no longer your turn.',

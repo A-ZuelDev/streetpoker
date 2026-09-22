@@ -5,7 +5,11 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapter, model_validator
 
 from streetpoker.application import (
+    MAX_ACTION_TIME_MS,
     MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS,
+    MAX_TIMEBANK_MS,
+    MAX_TIMEBANK_REFILL_EVERY_HANDS,
+    MIN_ACTION_TIME_MS,
     ActiveHandPlayerSnapshot,
     ActiveHandSnapshot,
     CallSnapshot,
@@ -45,6 +49,15 @@ StandUpPenalty = Annotated[
     int,
     Field(strict=True, ge=1, le=MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS),
 ]
+ActionTime = Annotated[
+    int,
+    Field(strict=True, ge=MIN_ACTION_TIME_MS, le=MAX_ACTION_TIME_MS),
+]
+TimebankMilliseconds = Annotated[int, Field(strict=True, ge=0, le=MAX_TIMEBANK_MS)]
+TimebankRefillHands = Annotated[
+    int,
+    Field(strict=True, ge=1, le=MAX_TIMEBANK_REFILL_EVERY_HANDS),
+]
 
 
 class _StrictInput(BaseModel):
@@ -65,6 +78,14 @@ class _Command(_StrictInput):
 class StartHandCommand(_Command):
     type: Literal["start_hand"]
     hand_number: PositiveInt
+
+
+class PauseGameCommand(_Command):
+    type: Literal["pause_game"]
+
+
+class ResumeGameCommand(_Command):
+    type: Literal["resume_game"]
 
 
 class _GameplayCommand(_Command):
@@ -128,6 +149,10 @@ class UpdateSettingsCommand(_Command):
     small_blind: PositiveInt | None = None
     big_blind: PositiveInt | None = None
     default_starting_stack: PositiveInt | None = None
+    action_time_ms: ActionTime | None = None
+    timebank_total_ms: TimebankMilliseconds | None = None
+    timebank_refill_amount_ms: TimebankMilliseconds | None = None
+    timebank_refill_every_hands: TimebankRefillHands | None = None
     seating_approval_required: bool | None = None
     stand_up_enabled: bool | None = None
     stand_up_penalty_per_recipient_chips: StandUpPenalty | None = None
@@ -140,6 +165,10 @@ class UpdateSettingsCommand(_Command):
             "small_blind",
             "big_blind",
             "default_starting_stack",
+            "action_time_ms",
+            "timebank_total_ms",
+            "timebank_refill_amount_ms",
+            "timebank_refill_every_hands",
             "seating_approval_required",
             "stand_up_enabled",
             "stand_up_penalty_per_recipient_chips",
@@ -160,6 +189,8 @@ class CloseRoomCommand(_Command):
 
 ClientCommand = Annotated[
     StartHandCommand
+    | PauseGameCommand
+    | ResumeGameCommand
     | FoldCommand
     | CheckCommand
     | CallCommand
@@ -225,9 +256,13 @@ class ActiveHandPlayerDto(_Outbound):
 class ActiveHandDto(_Outbound):
     hand_number: int
     action_sequence: int
-    action_deadline_unix_ms: int
+    action_deadline_unix_ms: int | None
+    action_timer_remaining_ms: NonNegativeInt
     current_actor_timebank_ms: NonNegativeInt
+    current_actor_timebank_total_ms: NonNegativeInt
     current_actor_using_timebank: bool
+    timebank_refill_amount_ms: NonNegativeInt
+    timebank_refill_hands_remaining: PositiveInt | None
     phase: str
     button_seat: int
     small_blind_seat: int
@@ -279,6 +314,10 @@ class RoomSettingsDto(_Outbound):
     small_blind: int
     big_blind: int
     default_starting_stack: int
+    action_time_ms: int
+    timebank_total_ms: int
+    timebank_refill_amount_ms: int
+    timebank_refill_every_hands: int
     seating_approval_required: bool
     stand_up_enabled: bool
     stand_up_penalty_per_recipient_chips: int
@@ -356,6 +395,7 @@ class RoomDto(_Outbound):
     room_code: str
     status: str
     host_guest_id: str
+    is_paused: bool
     settings: RoomSettingsDto
     members: list[MemberDto]
     seats: list[SeatDto]
@@ -462,8 +502,12 @@ def _active_hand(snapshot: ActiveHandSnapshot | None) -> ActiveHandDto | None:
         hand_number=snapshot.hand_number,
         action_sequence=snapshot.action_sequence,
         action_deadline_unix_ms=snapshot.action_deadline_unix_ms,
+        action_timer_remaining_ms=snapshot.action_timer_remaining_ms,
         current_actor_timebank_ms=snapshot.current_actor_timebank_ms,
+        current_actor_timebank_total_ms=snapshot.current_actor_timebank_total_ms,
         current_actor_using_timebank=snapshot.current_actor_using_timebank,
+        timebank_refill_amount_ms=snapshot.timebank_refill_amount_ms,
+        timebank_refill_hands_remaining=snapshot.timebank_refill_hands_remaining,
         phase=snapshot.phase.value,
         button_seat=snapshot.button_seat,
         small_blind_seat=snapshot.small_blind_seat,
@@ -529,6 +573,10 @@ def _settings(snapshot: RoomSettingsSnapshot) -> RoomSettingsDto:
         small_blind=snapshot.small_blind,
         big_blind=snapshot.big_blind,
         default_starting_stack=snapshot.default_starting_stack,
+        action_time_ms=snapshot.action_time_ms,
+        timebank_total_ms=snapshot.timebank_total_ms,
+        timebank_refill_amount_ms=snapshot.timebank_refill_amount_ms,
+        timebank_refill_every_hands=snapshot.timebank_refill_every_hands,
         seating_approval_required=snapshot.seating_approval_required,
         stand_up_enabled=snapshot.stand_up_enabled,
         stand_up_penalty_per_recipient_chips=(snapshot.stand_up_penalty_per_recipient_chips),
@@ -637,6 +685,7 @@ def _room(snapshot: RoomSnapshot) -> RoomDto:
         room_code=snapshot.room_code,
         status=snapshot.status.value,
         host_guest_id=snapshot.host_guest_id.value,
+        is_paused=snapshot.is_paused,
         settings=_settings(snapshot.settings),
         members=[_member(member) for member in snapshot.members],
         seats=[_seat(seat) for seat in snapshot.seats],

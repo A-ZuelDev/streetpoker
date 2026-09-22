@@ -74,6 +74,21 @@ describe('serverMessageSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts a frozen paused timer and rejects inconsistent pause projections', () => {
+    const snapshot = activeRoomSnapshot();
+    snapshot.room.is_paused = true;
+    snapshot.active_hand!.action_deadline_unix_ms = null;
+    snapshot.active_hand!.action_timer_remaining_ms = 12_000;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(true);
+
+    snapshot.room.is_paused = false;
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(false);
+  });
+
   it('accepts seat-oriented Stand-Up state and rejects internal identities', () => {
     const snapshot = activeRoomSnapshot();
     snapshot.room.settings.stand_up_enabled = true;
