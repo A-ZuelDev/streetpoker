@@ -297,6 +297,17 @@ def test_protocol_errors_are_typed_sanitized_and_connection_can_continue() -> No
         assert "secret" not in str(unknown)
         socket.send_json(
             {
+                "type": "pause_game",
+                "command_id": "recognized",
+                "unexpected": "secret",
+            }
+        )
+        recognized = socket.receive_json()
+        assert recognized["code"] == "validation_error"
+        assert recognized["command_id"] == "recognized"
+        assert "secret" not in str(recognized)
+        socket.send_json(
+            {
                 "type": "request_seat",
                 "command_id": "invalid",
                 "seat_index": True,
