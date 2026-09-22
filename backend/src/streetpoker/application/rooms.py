@@ -57,6 +57,14 @@ MAX_ROOM_NAME_LENGTH = 60
 DEFAULT_SMALL_BLIND = 50
 DEFAULT_BIG_BLIND = 100
 DEFAULT_STARTING_STACK = 10_000
+DEFAULT_ACTION_TIME_MS = 30_000
+MIN_ACTION_TIME_MS = 5_000
+MAX_ACTION_TIME_MS = 120_000
+DEFAULT_TIMEBANK_TOTAL_MS = 60_000
+DEFAULT_TIMEBANK_REFILL_AMOUNT_MS = 60_000
+DEFAULT_TIMEBANK_REFILL_EVERY_HANDS = 1
+MAX_TIMEBANK_MS = 300_000
+MAX_TIMEBANK_REFILL_EVERY_HANDS = 100
 DEFAULT_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = 100
 MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = 9_007_199_254_740_991 // (SIX_MAX_CAPACITY - 1)
 
@@ -172,6 +180,10 @@ class RoomSettings:
     small_blind: int = DEFAULT_SMALL_BLIND
     big_blind: int = DEFAULT_BIG_BLIND
     default_starting_stack: int = DEFAULT_STARTING_STACK
+    action_time_ms: int = DEFAULT_ACTION_TIME_MS
+    timebank_total_ms: int = DEFAULT_TIMEBANK_TOTAL_MS
+    timebank_refill_amount_ms: int = DEFAULT_TIMEBANK_REFILL_AMOUNT_MS
+    timebank_refill_every_hands: int = DEFAULT_TIMEBANK_REFILL_EVERY_HANDS
     seating_approval_required: bool = True
     stand_up_enabled: bool = False
     stand_up_penalty_per_recipient_chips: int = DEFAULT_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS
@@ -189,6 +201,32 @@ class RoomSettings:
         ):
             raise InvalidRoomSettingsError(
                 "The default starting stack must be at least the big blind."
+            )
+        if (
+            not _strict_positive_int(self.action_time_ms)
+            or not MIN_ACTION_TIME_MS <= self.action_time_ms <= MAX_ACTION_TIME_MS
+        ):
+            raise InvalidRoomSettingsError("The action time must be between 5 and 120 seconds.")
+        if (
+            not isinstance(self.timebank_total_ms, int)
+            or isinstance(self.timebank_total_ms, bool)
+            or not 0 <= self.timebank_total_ms <= MAX_TIMEBANK_MS
+        ):
+            raise InvalidRoomSettingsError("The time bank must be between 0 and 300 seconds.")
+        if (
+            not isinstance(self.timebank_refill_amount_ms, int)
+            or isinstance(self.timebank_refill_amount_ms, bool)
+            or not 0 <= self.timebank_refill_amount_ms <= self.timebank_total_ms
+        ):
+            raise InvalidRoomSettingsError(
+                "The time-bank refill must be between 0 and the configured total."
+            )
+        if (
+            not _strict_positive_int(self.timebank_refill_every_hands)
+            or self.timebank_refill_every_hands > MAX_TIMEBANK_REFILL_EVERY_HANDS
+        ):
+            raise InvalidRoomSettingsError(
+                "The time-bank refill cadence must be between 1 and 100 hands."
             )
         if not isinstance(self.seating_approval_required, bool):
             raise InvalidRoomSettingsError("Seating approval must be a boolean.")
@@ -217,6 +255,10 @@ class RoomSettingsUpdate:
     small_blind: int | SettingNotProvided = SETTING_NOT_PROVIDED
     big_blind: int | SettingNotProvided = SETTING_NOT_PROVIDED
     default_starting_stack: int | SettingNotProvided = SETTING_NOT_PROVIDED
+    action_time_ms: int | SettingNotProvided = SETTING_NOT_PROVIDED
+    timebank_total_ms: int | SettingNotProvided = SETTING_NOT_PROVIDED
+    timebank_refill_amount_ms: int | SettingNotProvided = SETTING_NOT_PROVIDED
+    timebank_refill_every_hands: int | SettingNotProvided = SETTING_NOT_PROVIDED
     seating_approval_required: bool | SettingNotProvided = SETTING_NOT_PROVIDED
     stand_up_enabled: bool | SettingNotProvided = SETTING_NOT_PROVIDED
     stand_up_penalty_per_recipient_chips: int | SettingNotProvided = SETTING_NOT_PROVIDED
@@ -267,6 +309,10 @@ class RoomSettingsSnapshot:
     small_blind: int
     big_blind: int
     default_starting_stack: int
+    action_time_ms: int
+    timebank_total_ms: int
+    timebank_refill_amount_ms: int
+    timebank_refill_every_hands: int
     seating_approval_required: bool
     stand_up_enabled: bool
     stand_up_penalty_per_recipient_chips: int
@@ -375,6 +421,7 @@ class RoomSnapshot:
     room_code: str
     status: RoomStatus
     host_guest_id: GuestId
+    is_paused: bool
     settings: RoomSettingsSnapshot
     members: tuple[MemberSnapshot, ...]
     seats: tuple[SeatSnapshot, ...]
@@ -388,6 +435,7 @@ class _Room:
     __slots__ = (
         "active_hand",
         "host_guest_id",
+        "is_paused",
         "last_hand",
         "last_stand_up_result",
         "members",
@@ -401,6 +449,8 @@ class _Room:
         "stand_up_round",
         "status",
         "table",
+        "timebank_balances_ms",
+        "timebank_hands_since_refill",
     )
 
     def __init__(
@@ -418,6 +468,7 @@ class _Room:
         self.room_id = room_id
         self.room_code = normalize_room_code(room_code)
         self.host_guest_id = host_guest_id
+        self.is_paused = False
         self.settings = settings
         self.password_record = password_record
         self.status = RoomStatus.OPEN
@@ -427,6 +478,8 @@ class _Room:
         self.stand_up_round: StandUpRound | None = None
         self.last_stand_up_result: StandUpResolution | StandUpCancellation | None = None
         self.next_hand_number = 1
+        self.timebank_balances_ms: dict[PlayerId, int] = {}
+        self.timebank_hands_since_refill: dict[PlayerId, int] = {}
         self.members = {
             host_guest_id: _RoomMember(
                 guest_id=host_guest_id,
@@ -448,6 +501,7 @@ class _Room:
         candidate.room_id = self.room_id
         candidate.room_code = self.room_code
         candidate.host_guest_id = self.host_guest_id
+        candidate.is_paused = self.is_paused
         candidate.settings = self.settings
         candidate.password_record = self.password_record
         candidate.status = self.status
@@ -456,6 +510,8 @@ class _Room:
         candidate.stand_up_round = self.stand_up_round
         candidate.last_stand_up_result = self.last_stand_up_result
         candidate.next_hand_number = self.next_hand_number
+        candidate.timebank_balances_ms = self.timebank_balances_ms.copy()
+        candidate.timebank_hands_since_refill = self.timebank_hands_since_refill.copy()
         candidate.members = dict(self.members)
         candidate.seat_requests = dict(self.seat_requests)
         candidate.next_join_order = self.next_join_order
@@ -570,6 +626,8 @@ class _Room:
             self._leave_table(member)
         self.seat_requests.pop(actor, None)
         self.members.pop(actor)
+        self.timebank_balances_ms.pop(member.player_id, None)
+        self.timebank_hands_since_refill.pop(member.player_id, None)
         self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_LEFT)
 
     def kick(self, *, target: GuestId) -> None:
@@ -586,6 +644,8 @@ class _Room:
             self._leave_table(member)
         self.seat_requests.pop(target, None)
         self.members.pop(target)
+        self.timebank_balances_ms.pop(member.player_id, None)
+        self.timebank_hands_since_refill.pop(member.player_id, None)
         self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_KICKED)
 
     def update_settings(
@@ -599,9 +659,13 @@ class _Room:
             settings.small_blind != self.settings.small_blind
             or settings.big_blind != self.settings.big_blind
             or settings.default_starting_stack != self.settings.default_starting_stack
+            or settings.action_time_ms != self.settings.action_time_ms
+            or settings.timebank_total_ms != self.settings.timebank_total_ms
+            or settings.timebank_refill_amount_ms != self.settings.timebank_refill_amount_ms
+            or settings.timebank_refill_every_hands != self.settings.timebank_refill_every_hands
         )
         if self.status is RoomStatus.HAND_IN_PROGRESS and between_hand_changed:
-            raise ActiveHandMutationError(operation="change blind or starting-stack settings")
+            raise ActiveHandMutationError(operation="change gameplay settings")
         if (
             self.settings.stand_up_enabled
             and not settings.stand_up_enabled
@@ -609,7 +673,18 @@ class _Room:
         ):
             self.last_stand_up_result = self.stand_up_round.cancel(StandUpCancelReason.DISABLED)
             self.stand_up_round = None
+        timer_settings_changed = (
+            settings.timebank_total_ms != self.settings.timebank_total_ms
+            or settings.timebank_refill_amount_ms != self.settings.timebank_refill_amount_ms
+            or settings.timebank_refill_every_hands != self.settings.timebank_refill_every_hands
+        )
         self.settings = settings
+        if timer_settings_changed:
+            player_ids = {member.player_id for member in self.members.values()}
+            self.timebank_balances_ms = {
+                player_id: settings.timebank_total_ms for player_id in player_ids
+            }
+            self.timebank_hands_since_refill = {player_id: 0 for player_id in player_ids}
         if password_record is not SETTING_NOT_PROVIDED:
             self.password_record = password_record
 
@@ -750,11 +825,16 @@ class _Room:
             room_code=self.room_code,
             status=self.status,
             host_guest_id=self.host_guest_id,
+            is_paused=self.is_paused,
             settings=RoomSettingsSnapshot(
                 room_name=self.settings.room_name,
                 small_blind=self.settings.small_blind,
                 big_blind=self.settings.big_blind,
                 default_starting_stack=self.settings.default_starting_stack,
+                action_time_ms=self.settings.action_time_ms,
+                timebank_total_ms=self.settings.timebank_total_ms,
+                timebank_refill_amount_ms=self.settings.timebank_refill_amount_ms,
+                timebank_refill_every_hands=self.settings.timebank_refill_every_hands,
                 seating_approval_required=self.settings.seating_approval_required,
                 stand_up_enabled=self.settings.stand_up_enabled,
                 stand_up_penalty_per_recipient_chips=(
@@ -776,6 +856,8 @@ class _Room:
             raise InvalidRoomStateError("A room must retain its canonical room code.")
         if not isinstance(self.settings, RoomSettings) or not isinstance(self.status, RoomStatus):
             raise InvalidRoomStateError("A room requires validated settings and status.")
+        if not isinstance(self.is_paused, bool):
+            raise InvalidRoomStateError("Room pause state must be boolean.")
         if self.password_record is not None and not isinstance(
             self.password_record, _PasswordRecord
         ):
@@ -840,6 +922,20 @@ class _Room:
         if len(table_by_player) != self.table.occupied_count:
             raise InvalidRoomStateError("Table occupants must have unique player identities.")
         member_by_player = {member.player_id: member for member in self.members.values()}
+        if not set(self.timebank_balances_ms) <= set(member_by_player) or any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value <= self.settings.timebank_total_ms
+            for value in self.timebank_balances_ms.values()
+        ):
+            raise InvalidRoomStateError("Stored time-bank balances must belong to room members.")
+        if set(self.timebank_hands_since_refill) != set(self.timebank_balances_ms) or any(
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value <= self.settings.timebank_refill_every_hands
+            for value in self.timebank_hands_since_refill.values()
+        ):
+            raise InvalidRoomStateError("Stored time-bank refill counters are inconsistent.")
         if not set(table_by_player) <= set(member_by_player):
             raise InvalidRoomStateError("Every table player must map to a current member.")
         for member in self.members.values():
@@ -939,6 +1035,8 @@ class _Room:
     ) -> None:
         active = self.active_hand
         if active is None:
+            if self.is_paused:
+                raise InvalidRoomStateError("A room without an active hand cannot be paused.")
             if self.last_hand is not None and self.last_hand.hand_number >= self.next_hand_number:
                 raise InvalidRoomStateError("A completed hand number must already be consumed.")
             return
@@ -946,6 +1044,12 @@ class _Room:
             raise InvalidRoomStateError("The active hand must be the most recently consumed hand.")
         if active.action_sequence < 0:
             raise InvalidRoomStateError("An action sequence cannot be negative.")
+        if active.deadline is None:
+            raise InvalidRoomStateError("An active hand requires a turn deadline.")
+        if self.is_paused != (active.frozen_remaining_ms is not None):
+            raise InvalidRoomStateError("Paused rooms must own exactly one frozen timer value.")
+        if active.frozen_remaining_ms is not None and active.frozen_remaining_ms < 0:
+            raise InvalidRoomStateError("Frozen timer time cannot be negative.")
         snapshot = active.hand.snapshot
         if snapshot.terminal:
             raise InvalidRoomStateError("A terminal hand cannot remain active in a room.")
@@ -961,10 +1065,29 @@ class _Room:
                 "Active-hand participant mappings must be exact and unique."
             )
         if set(active.timebank_remaining_ms) != participant_ids or any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            not isinstance(value, int)
+            or isinstance(value, bool)
+            or not 0 <= value <= active.timebank_total_ms
             for value in active.timebank_remaining_ms.values()
         ):
             raise InvalidRoomStateError("Active-hand timebank balances must match participants.")
+        if set(active.timebank_hands_until_refill) != participant_ids or any(
+            value is not None
+            and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 1
+                or value > self.settings.timebank_refill_every_hands
+            )
+            for value in active.timebank_hands_until_refill.values()
+        ):
+            raise InvalidRoomStateError("Active-hand refill cadence must match participants.")
+        if (
+            active.base_action_time_ms != self.settings.action_time_ms
+            or active.timebank_total_ms != self.settings.timebank_total_ms
+            or active.timebank_refill_amount_ms != self.settings.timebank_refill_amount_ms
+        ):
+            raise InvalidRoomStateError("Active-hand timer rules must match room settings.")
         for identity in active.identities:
             member = member_by_player.get(identity.player_id)
             seat = table_by_player.get(identity.player_id)

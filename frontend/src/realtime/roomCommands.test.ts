@@ -17,6 +17,8 @@ const valid = [
   { type: 'leave', command_id: '5' },
   { type: 'kick', command_id: '6', target_guest_id: 'guest_alice' },
   { type: 'start_hand', command_id: '7', hand_number: 1 },
+  { type: 'pause_game', command_id: 'pause' },
+  { type: 'resume_game', command_id: 'resume' },
   { type: 'update_settings', command_id: '8', password: null },
   { type: 'close_room', command_id: '9' },
 ];
@@ -59,6 +61,15 @@ describe('room commands', () => {
     { type: 'update_settings', command_id: 'x', room_code: 'ABCDEFGH' },
     { type: 'update_settings', command_id: 'x', actor_guest_id: 'guest_host' },
     { type: 'update_settings', command_id: 'x', room_id: 'room' },
+    { type: 'update_settings', command_id: 'x', action_time_ms: 4_999 },
+    { type: 'update_settings', command_id: 'x', action_time_ms: 120_001 },
+    { type: 'update_settings', command_id: 'x', timebank_total_ms: -1 },
+    { type: 'update_settings', command_id: 'x', timebank_total_ms: 300_001 },
+    {
+      type: 'update_settings',
+      command_id: 'x',
+      timebank_refill_every_hands: 101,
+    },
     {
       type: 'update_settings',
       command_id: 'x',
@@ -89,6 +100,10 @@ describe('room commands', () => {
       small_blind: 100,
       big_blind: 200,
       default_starting_stack: 20_000,
+      action_time_ms: 45_000,
+      timebank_total_ms: 90_000,
+      timebank_refill_amount_ms: 15_000,
+      timebank_refill_every_hands: 3,
       seating_approval_required: false,
       stand_up_enabled: true,
       stand_up_penalty_per_recipient_chips: 500,
@@ -142,6 +157,45 @@ describe('room commands', () => {
     ).toEqual({ type: 'start_hand', command_id: 'start', hand_number: 37 });
   });
 
+  it('builds pause and resume only for the host in the matching server state', () => {
+    const active = activeRoomSnapshot();
+    expect(
+      buildRoomCommand({
+        snapshot: active,
+        guestId: 'guest_host',
+        request: { type: 'pause_game' },
+        commandId: 'pause',
+      }),
+    ).toEqual({ type: 'pause_game', command_id: 'pause' });
+    expect(
+      buildRoomCommand({
+        snapshot: active,
+        guestId: 'guest_alice',
+        request: { type: 'pause_game' },
+        commandId: 'guest-pause',
+      }),
+    ).toBeNull();
+
+    active.room.is_paused = true;
+    active.active_hand!.action_deadline_unix_ms = null;
+    expect(
+      buildRoomCommand({
+        snapshot: active,
+        guestId: 'guest_host',
+        request: { type: 'pause_game' },
+        commandId: 'duplicate-pause',
+      }),
+    ).toBeNull();
+    expect(
+      buildRoomCommand({
+        snapshot: active,
+        guestId: 'guest_host',
+        request: { type: 'resume_game' },
+        commandId: 'resume',
+      }),
+    ).toEqual({ type: 'resume_game', command_id: 'resume' });
+  });
+
   it('uses request_seat for approval-disabled seating and blocks it during a hand', () => {
     const open = openRoomSnapshot();
     open.room.settings.seating_approval_required = false;
@@ -176,6 +230,9 @@ describe('room commands', () => {
   it('maps known and unknown errors without server text', () => {
     expect(safeRoomCommandMessage('seat_occupied')).toBe(
       'That seat is no longer available.',
+    );
+    expect(safeRoomCommandMessage('game_paused')).toBe(
+      'The game is paused by the room host.',
     );
     expect(safeRoomCommandMessage('future_private_detail')).toBe(
       'The server rejected the room action.',

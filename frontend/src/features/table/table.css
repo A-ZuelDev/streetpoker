@@ -437,9 +437,11 @@
 }
 
 .turn-countdown {
-  display: flex;
-  align-items: baseline;
-  gap: 0.4rem;
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem 0.45rem;
   margin-top: 0.45rem;
   padding: 0.35rem 0.6rem;
   border: 1px solid rgb(221 183 104 / 32%);
@@ -447,17 +449,36 @@
   color: var(--gold-soft);
   background: rgb(5 19 14 / 82%);
   font-size: 0.7rem;
-  white-space: nowrap;
+  white-space: normal;
 }
 
-.turn-countdown strong {
+.turn-countdown--paused {
+  border-color: rgb(221 183 104 / 62%);
+}
+
+.turn-countdown__remaining {
   font-size: 0.9rem;
   font-variant-numeric: tabular-nums;
 }
 
-.turn-countdown small,
+.turn-countdown__summary,
+.turn-countdown__bank-meter,
+.turn-countdown__refill,
+.turn-countdown__sync {
+  grid-column: 1 / -1;
+}
+
+.turn-countdown__summary,
+.turn-countdown__refill,
+.turn-countdown__sync,
 .turn-countdown--stale {
   color: var(--text-muted);
+}
+
+.turn-countdown__bank-meter {
+  width: 100%;
+  height: 0.3rem;
+  accent-color: var(--table-accent);
 }
 
 .table-seat {

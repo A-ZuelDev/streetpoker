@@ -75,12 +75,18 @@ export function PokerTable({ table, isFresh, onRequestSeat }: PokerTableProps) {
                 {formatChips(table.pot)}
               </span>
             </div>
-            {table.mode === 'live' && table.actionDeadlineUnixMs !== null ? (
+            {table.mode === 'live' && table.actionTimerRemainingMs !== null ? (
               isFresh ? (
                 <TurnCountdown
-                  key={table.actionDeadlineUnixMs}
+                  key={`${table.actionDeadlineUnixMs ?? 'paused'}-${table.currentActorUsingTimebank}`}
                   deadlineUnixMs={table.actionDeadlineUnixMs}
+                  timerRemainingMs={table.actionTimerRemainingMs}
+                  timebankRemainingMs={table.currentActorTimebankMs ?? 0}
+                  timebankTotalMs={table.currentActorTimebankTotalMs ?? 0}
                   usingTimebank={table.currentActorUsingTimebank}
+                  paused={table.isPaused}
+                  refillAmountMs={table.timebankRefillAmountMs ?? 0}
+                  refillHandsRemaining={table.timebankRefillHandsRemaining}
                 />
               ) : (
                 <div className="turn-countdown turn-countdown--stale">

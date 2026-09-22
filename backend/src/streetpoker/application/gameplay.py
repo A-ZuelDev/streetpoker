@@ -69,9 +69,13 @@ class ActiveHandPlayerSnapshot:
 class ActiveHandSnapshot:
     hand_number: int
     action_sequence: int
-    action_deadline_unix_ms: int
+    action_deadline_unix_ms: int | None
+    action_timer_remaining_ms: int
     current_actor_timebank_ms: int
+    current_actor_timebank_total_ms: int
     current_actor_using_timebank: bool
+    timebank_refill_amount_ms: int
+    timebank_refill_hands_remaining: int | None
     phase: HoldemHandPhase
     button_seat: int
     small_blind_seat: int
@@ -155,8 +159,13 @@ class _ActiveHand:
     hand: HoldemHand
     identities: tuple[_HandIdentity, ...]
     timebank_remaining_ms: dict[PlayerId, int]
+    timebank_hands_until_refill: dict[PlayerId, int | None]
+    base_action_time_ms: int
+    timebank_total_ms: int
+    timebank_refill_amount_ms: int
     deadline: TurnDeadline | None = None
     using_timebank: bool = False
+    frozen_remaining_ms: int | None = None
 
     def copy(self) -> _ActiveHand:
         return _ActiveHand(
@@ -165,8 +174,13 @@ class _ActiveHand:
             hand=self.hand.copy(),
             identities=self.identities,
             timebank_remaining_ms=self.timebank_remaining_ms.copy(),
+            timebank_hands_until_refill=self.timebank_hands_until_refill.copy(),
+            base_action_time_ms=self.base_action_time_ms,
+            timebank_total_ms=self.timebank_total_ms,
+            timebank_refill_amount_ms=self.timebank_refill_amount_ms,
             deadline=self.deadline,
             using_timebank=self.using_timebank,
+            frozen_remaining_ms=self.frozen_remaining_ms,
         )
 
     def identity_for_guest(self, guest_id: GuestId) -> _HandIdentity | None:
@@ -252,11 +266,29 @@ def _card(card: Card) -> CardSnapshot:
     return CardSnapshot(card.rank, card.suit)
 
 
-def _active_projection(active: _ActiveHand, viewer: GuestId) -> ActiveHandSnapshot:
+def _active_projection(
+    active: _ActiveHand,
+    viewer: GuestId,
+    *,
+    paused: bool,
+) -> ActiveHandSnapshot:
     snapshot = active.hand.snapshot
     assert active.deadline is not None
     legal = active.hand.legal_actions()
     actor = active.identity_for_player(legal.player_id).guest_id
+    remaining_ms = (
+        active.frozen_remaining_ms
+        if paused
+        else (
+            active.timebank_remaining_ms[legal.player_id]
+            if active.using_timebank
+            else active.base_action_time_ms
+        )
+    )
+    assert remaining_ms is not None
+    timebank_remaining_ms = active.timebank_remaining_ms[legal.player_id]
+    if active.using_timebank and paused:
+        timebank_remaining_ms = min(timebank_remaining_ms, remaining_ms)
     players = tuple(
         ActiveHandPlayerSnapshot(
             guest_id=(identity := active.identity_for_player(participant.player_id)).guest_id,
@@ -277,9 +309,13 @@ def _active_projection(active: _ActiveHand, viewer: GuestId) -> ActiveHandSnapsh
     return ActiveHandSnapshot(
         hand_number=active.hand_number,
         action_sequence=active.action_sequence,
-        action_deadline_unix_ms=active.deadline.unix_ms,
-        current_actor_timebank_ms=active.timebank_remaining_ms[legal.player_id],
+        action_deadline_unix_ms=None if paused else active.deadline.unix_ms,
+        action_timer_remaining_ms=remaining_ms,
+        current_actor_timebank_ms=timebank_remaining_ms,
+        current_actor_timebank_total_ms=active.timebank_total_ms,
         current_actor_using_timebank=active.using_timebank,
+        timebank_refill_amount_ms=active.timebank_refill_amount_ms,
+        timebank_refill_hands_remaining=active.timebank_hands_until_refill[legal.player_id],
         phase=snapshot.phase,
         button_seat=snapshot.button_position.value,
         small_blind_seat=snapshot.small_blind_position.value,
@@ -398,10 +434,20 @@ def project_room_view(
     active_hand: _ActiveHand | None,
     last_hand: _CompletedHandRecord | None,
     viewer: GuestId,
+    *,
+    paused: bool,
 ) -> RoomViewSnapshot:
     return RoomViewSnapshot(
         room=project_current_room_snapshot(room_snapshot, active_hand),
         next_hand_number=next_hand_number,
-        active_hand=(None if active_hand is None else _active_projection(active_hand, viewer)),
+        active_hand=(
+            None
+            if active_hand is None
+            else _active_projection(
+                active_hand,
+                viewer,
+                paused=paused,
+            )
+        ),
         last_hand=(None if last_hand is None else _completed_projection(last_hand, viewer)),
     )

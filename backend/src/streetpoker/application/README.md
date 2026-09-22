@@ -94,11 +94,12 @@ cannot remove the new binding. Leave, Kick, and Close Room still terminate membe
 the room through their explicit commands. Replacement itself changes no room or poker
 state. Manual reconnect and the Phase 11A disconnect rules otherwise remain in effect.
 
-## Phase 11C action deadlines
+## Phase 13E.1 action deadlines, pause, and time bank
 
-RoomService records a 30,000 millisecond deadline for each active turn using an injectable
-clock. Monotonic milliseconds decide expiry; a Unix millisecond timestamp is projected for
-future display. A player action arriving at or after the deadline loses to the server timeout.
+RoomService records a configurable base deadline for each active turn using an injectable
+clock. The allowed decision time is 5–120 seconds and defaults to 30 seconds. Monotonic
+milliseconds decide expiry; a Unix millisecond timestamp is projected for display. A player
+action arriving at or after the deadline loses to the server timeout.
 The timeout checks when check is legal and folds otherwise, through the existing hand action
 and settlement path. Reconnect and socket replacement do not change the deadline.
 
@@ -106,27 +107,35 @@ The realtime coordinator schedules one task for each active room turn. Each call
 room, hand number, action sequence, actor, deadline revision, and actual expiry under the room
 lock. A stale callback changes nothing. Task cancellation only cleans up resources; it does
 not establish correctness. The scheduler and deadlines are process-local, so process restart
-does not recover an in-progress hand. There is no frontend countdown, timebank, or automatic
-reconnect in this phase.
+does not recover an in-progress hand.
 
-## Phase 11E automatic per-hand timebank
+The time bank is room-local and persistent across hands. Its total is configurable from
+0–300 seconds. When the base deadline expires, the server enters the bank without spending it
+up front. Only elapsed bank time is deducted when the player acts, pauses, or times out. The
+base-to-bank transition advances the action sequence used for command stale-state protection,
+so a command sent for the base deadline cannot act under the extended deadline. A zero balance
+skips the bank and immediately checks or folds through the existing timeout path.
 
-Each hand gives each participant 60,000 milliseconds of process-local timebank. An early
-action keeps that balance for later turns in the same hand. At the 30,000 millisecond base
-deadline, RoomService consumes the actor's full remaining balance and commits an extended
-deadline measured from the original deadline. This transition advances the action sequence
-used for command stale-state protection, so a command sent for the base deadline cannot act
-under the extended deadline. A fresh state lets the player act during the extension. An
-action does not refund consumed timebank. When no balance remains, deadline expiry checks
-or folds through the existing action path. Settlement discards the per-hand balances, and
-the next hand creates fresh balances for its participants.
+Refill is additive and capped by the configured total. After every configured number of that
+player's completed hands, the configured amount is added at the next hand start. An amount of
+zero disables automatic refill. Defaults are a 60-second total and +60 seconds every hand,
+which preserves the earlier full-per-hand behavior. Saving a time-bank total, amount, or cadence
+between hands resets every current member's balance to the configured total and restarts the
+cadence counter.
+
+Only the host can pause or resume, and only during an active hand. Pause is idempotent and
+freezes the exact remaining base or bank time; gameplay actions are rejected while paused.
+Reconnect and room commands continue. Resume is idempotent and creates a new deadline revision
+from the frozen duration. At an exact deadline boundary, the due base/bank transition is applied
+before pause. Stale pre-pause callbacks therefore cannot extend or time out the resumed turn.
 
 The coordinator resolves all due transitions under its room lock before admitting a late
 command or sending reconnect state. Old timer tasks are cancelled for cleanup; deadline
 identity and the application balance decide correctness. Viewer snapshots include only the
-current actor's remaining milliseconds and whether that actor is using timebank. The browser
-uses those fields and the projected Unix deadline for display only. Reconnect and socket
-replacement do not replenish a balance or extend a deadline.
+current phase duration, current actor's bank remaining/total, bank-use flag, and refill cadence.
+Paused projections omit the running deadline and expose the frozen remaining duration. The
+browser uses those fields for display only; it never decides timeout outcomes. Reconnect and
+socket replacement do not replenish a balance or extend a deadline.
 
 ## Phase 11F disconnect grace
 

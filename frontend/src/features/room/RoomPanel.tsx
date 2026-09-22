@@ -351,6 +351,23 @@ export function RoomPanel({
                     >
                       {panel.startHandLabel ?? 'Start hand'}
                     </button>
+                    {panel.isPaused ? (
+                      <button
+                        type="button"
+                        disabled={!panel.canResumeGame}
+                        onClick={() => send({ type: 'resume_game' })}
+                      >
+                        Resume game
+                      </button>
+                    ) : panel.handInProgress ? (
+                      <button
+                        type="button"
+                        disabled={!panel.canPauseGame}
+                        onClick={() => send({ type: 'pause_game' })}
+                      >
+                        Pause game
+                      </button>
+                    ) : null}
                     {confirmation?.type === 'close_room' ? (
                       <span className="room-panel__confirm">
                         <button

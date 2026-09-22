@@ -150,12 +150,12 @@ def test_projection_failure_discards_successfully_mutated_candidate(
     hand = current(service, room_id)
     failed = False
 
-    def fail_once(*args):  # type: ignore[no-untyped-def]
+    def fail_once(*args, **kwargs):  # type: ignore[no-untyped-def]
         nonlocal failed
         if not failed:
             failed = True
             raise RuntimeError("forced projection failure")
-        return project_room_view(*args)
+        return project_room_view(*args, **kwargs)
 
     monkeypatch.setattr(room_service_module, "project_room_view", fail_once)
 

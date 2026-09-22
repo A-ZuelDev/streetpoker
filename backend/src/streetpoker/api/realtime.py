@@ -27,9 +27,11 @@ from streetpoker.api.schemas.realtime import (
     KickCommand,
     LeaveCommand,
     OutboundMessage,
+    PauseGameCommand,
     RaiseToCommand,
     RejectSeatCommand,
     RequestSeatCommand,
+    ResumeGameCommand,
     StandCommand,
     StartHandCommand,
     StateMessage,
@@ -44,6 +46,7 @@ from streetpoker.application import (
     DuplicateMembershipError,
     DuplicateNicknameError,
     DuplicateSeatRequestError,
+    GamePausedError,
     GuestId,
     HandAlreadyActiveError,
     HostCannotLeaveRoomError,
@@ -333,6 +336,7 @@ _SAFE_APPLICATION_ERRORS: dict[type[BaseException], SafeError] = {
         "duplicate_seat_request", "A seat request is already pending."
     ),
     HandAlreadyActiveError: SafeError("hand_already_active", "A hand is already active."),
+    GamePausedError: SafeError("game_paused", "The game is paused by the room host."),
     HostCannotLeaveRoomError: SafeError("host_cannot_leave", "The host must close the room."),
     InsufficientEligiblePlayersError: SafeError(
         "insufficient_players", "At least two eligible players are required."
@@ -529,6 +533,10 @@ class RealtimeRoomCoordinator:
             if not self.registry.is_registered(session):
                 return
             if self._resolve_due_graces_locked(session.room_id):
+                self._broadcast_current_locked(session.room_id)
+            if isinstance(command, PauseGameCommand) and self._apply_due_turn_locked(
+                session.room_id
+            ):
                 self._broadcast_current_locked(session.room_id)
             admitted_at_monotonic_ms: int | None = None
             if isinstance(
@@ -983,6 +991,10 @@ class RealtimeRoomCoordinator:
                 total=command.total,
                 admitted_at_monotonic_ms=admitted_at_monotonic_ms,
             )
+        elif isinstance(command, PauseGameCommand):
+            self._room_service.pause_game(room_id=session.room_id, actor=session.guest_id)
+        elif isinstance(command, ResumeGameCommand):
+            self._room_service.resume_game(room_id=session.room_id, actor=session.guest_id)
         elif isinstance(command, RequestSeatCommand):
             self._room_service.request_seat(
                 room_id=session.room_id,
@@ -1041,6 +1053,10 @@ class RealtimeRoomCoordinator:
         small_blind_value: int | SettingNotProvided
         big_blind_value: int | SettingNotProvided
         starting_stack_value: int | SettingNotProvided
+        action_time_value: int | SettingNotProvided
+        timebank_total_value: int | SettingNotProvided
+        timebank_refill_amount_value: int | SettingNotProvided
+        timebank_refill_hands_value: int | SettingNotProvided
         stand_up_enabled_value: bool | SettingNotProvided
         stand_up_penalty_value: int | SettingNotProvided
         if "room_name" in supplied:
@@ -1071,6 +1087,30 @@ class RealtimeRoomCoordinator:
             starting_stack_value = starting_stack
         else:
             starting_stack_value = SETTING_NOT_PROVIDED
+        action_time = command.action_time_ms
+        timebank_total = command.timebank_total_ms
+        timebank_refill_amount = command.timebank_refill_amount_ms
+        timebank_refill_hands = command.timebank_refill_every_hands
+        if "action_time_ms" in supplied:
+            assert action_time is not None
+            action_time_value = action_time
+        else:
+            action_time_value = SETTING_NOT_PROVIDED
+        if "timebank_total_ms" in supplied:
+            assert timebank_total is not None
+            timebank_total_value = timebank_total
+        else:
+            timebank_total_value = SETTING_NOT_PROVIDED
+        if "timebank_refill_amount_ms" in supplied:
+            assert timebank_refill_amount is not None
+            timebank_refill_amount_value = timebank_refill_amount
+        else:
+            timebank_refill_amount_value = SETTING_NOT_PROVIDED
+        if "timebank_refill_every_hands" in supplied:
+            assert timebank_refill_hands is not None
+            timebank_refill_hands_value = timebank_refill_hands
+        else:
+            timebank_refill_hands_value = SETTING_NOT_PROVIDED
         if "stand_up_enabled" in supplied:
             assert stand_up_enabled is not None
             stand_up_enabled_value = stand_up_enabled
@@ -1086,6 +1126,10 @@ class RealtimeRoomCoordinator:
             small_blind=small_blind_value,
             big_blind=big_blind_value,
             default_starting_stack=starting_stack_value,
+            action_time_ms=action_time_value,
+            timebank_total_ms=timebank_total_value,
+            timebank_refill_amount_ms=timebank_refill_amount_value,
+            timebank_refill_every_hands=timebank_refill_hands_value,
             seating_approval_required=seating_approval_value,
             stand_up_enabled=stand_up_enabled_value,
             stand_up_penalty_per_recipient_chips=stand_up_penalty_value,

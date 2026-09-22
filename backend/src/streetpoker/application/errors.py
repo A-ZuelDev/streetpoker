@@ -165,6 +165,10 @@ class ActionDeadlineExpiredError(GameplayError):
     """Raised when a player action reaches application admission after expiry."""
 
 
+class GamePausedError(GameplayError):
+    """Raised when gameplay is attempted while the host has paused the game."""
+
+
 class GameplaySettlementError(GameplayError):
     """Raised when terminal settlement cannot reconcile to the room table."""
 

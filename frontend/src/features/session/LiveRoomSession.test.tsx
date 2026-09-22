@@ -279,16 +279,16 @@ describe('LiveRoomSession', () => {
 
     const extended = structuredClone(snapshot);
     extended.active_hand!.action_sequence += 1;
-    extended.active_hand!.action_deadline_unix_ms += 60_000;
-    extended.active_hand!.current_actor_timebank_ms = 0;
+    extended.active_hand!.action_deadline_unix_ms! += 60_000;
+    extended.active_hand!.current_actor_timebank_ms = 60_000;
     extended.active_hand!.current_actor_using_timebank = true;
     second.serverMessage({ type: 'state', snapshot: extended });
     expect(
       await screen.findByRole('timer', {
-        name: 'Approximate timebank time remaining',
+        name: 'Authoritative action timer and time bank',
       }),
     ).toBeInTheDocument();
-    expect(screen.getByText('Timebank')).toBeInTheDocument();
+    expect(screen.getByText('Time bank')).toBeInTheDocument();
     expect(screen.queryByText('Waiting for fresh state')).toBeNull();
     expect(second.sent).toHaveLength(1);
   });

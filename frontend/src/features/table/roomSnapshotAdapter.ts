@@ -129,6 +129,8 @@ function roomPendingView(
     leave: 'leave',
     kick: 'kick',
     start_hand: 'start-hand',
+    pause_game: 'pause-game',
+    resume_game: 'resume-game',
     update_settings: 'settings',
     close_room: 'close-room',
   } as const;
@@ -143,6 +145,8 @@ function roomPendingView(
     leave: 'Leaving room…',
     kick: 'Removing player…',
     start_hand: 'Starting hand…',
+    pause_game: 'Pausing game…',
+    resume_game: 'Resuming game…',
     update_settings: 'Saving room settings…',
     close_room: 'Closing room…',
   } as const;
@@ -352,9 +356,16 @@ export function roomSnapshotToTableView(
     isHost,
     street: activeHand === null ? 'Open table' : phaseLabel(activeHand.phase),
     actionDeadlineUnixMs: activeHand?.action_deadline_unix_ms ?? null,
+    actionTimerRemainingMs: activeHand?.action_timer_remaining_ms ?? null,
     currentActorTimebankMs: activeHand?.current_actor_timebank_ms ?? null,
+    currentActorTimebankTotalMs:
+      activeHand?.current_actor_timebank_total_ms ?? null,
     currentActorUsingTimebank:
       activeHand?.current_actor_using_timebank ?? false,
+    timebankRefillAmountMs: activeHand?.timebank_refill_amount_ms ?? null,
+    timebankRefillHandsRemaining:
+      activeHand?.timebank_refill_hands_remaining ?? null,
+    isPaused: snapshot.room.is_paused,
     pot: activeHand?.pot_chips ?? 0,
     board: activeHand?.board.map(cardView) ?? [],
     seats,
@@ -370,6 +381,7 @@ export function roomSnapshotToTableView(
       roomPendingLabel: pendingRoomView?.label ?? null,
       viewerIsHost: isHost,
       hasCompletedHand: snapshot.last_hand !== null,
+      isPaused: snapshot.room.is_paused,
     }),
     handCompletion:
       activeHand === null ? handCompletionView(snapshot.last_hand) : null,
@@ -425,6 +437,19 @@ export function roomSnapshotToTableView(
         isHost &&
         snapshot.room.status === 'open' &&
         activeHand === null,
+      canPauseGame:
+        fresh &&
+        !commandsPending &&
+        isHost &&
+        activeHand !== null &&
+        !snapshot.room.is_paused,
+      canResumeGame:
+        fresh &&
+        !commandsPending &&
+        isHost &&
+        activeHand !== null &&
+        snapshot.room.is_paused,
+      isPaused: snapshot.room.is_paused,
       showStand: actor?.status === 'seated',
       startHandLabel:
         snapshot.last_hand === null ? 'Start hand' : 'Start next hand',
@@ -437,6 +462,12 @@ export function roomSnapshotToTableView(
         smallBlind: snapshot.room.settings.small_blind,
         bigBlind: snapshot.room.settings.big_blind,
         defaultStartingStack: snapshot.room.settings.default_starting_stack,
+        actionTimeMs: snapshot.room.settings.action_time_ms,
+        timebankTotalMs: snapshot.room.settings.timebank_total_ms,
+        timebankRefillAmountMs:
+          snapshot.room.settings.timebank_refill_amount_ms,
+        timebankRefillEveryHands:
+          snapshot.room.settings.timebank_refill_every_hands,
         seatingApprovalRequired:
           snapshot.room.settings.seating_approval_required,
         standUpEnabled: snapshot.room.settings.stand_up_enabled,

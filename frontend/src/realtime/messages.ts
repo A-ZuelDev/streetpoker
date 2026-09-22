@@ -84,9 +84,17 @@ const handPhaseSchema = z.enum([
 const activeHandSchema = z.strictObject({
   hand_number: safeIntegerSchema,
   action_sequence: safeIntegerSchema,
-  action_deadline_unix_ms: safeIntegerSchema,
+  action_deadline_unix_ms: safeIntegerSchema.nullable(),
+  action_timer_remaining_ms: safeIntegerSchema.refine((value) => value >= 0),
   current_actor_timebank_ms: safeIntegerSchema.refine((value) => value >= 0),
+  current_actor_timebank_total_ms: safeIntegerSchema.refine(
+    (value) => value >= 0,
+  ),
   current_actor_using_timebank: z.boolean(),
+  timebank_refill_amount_ms: safeIntegerSchema.refine((value) => value >= 0),
+  timebank_refill_hands_remaining: safeIntegerSchema
+    .refine((value) => value >= 1)
+    .nullable(),
   phase: handPhaseSchema,
   button_seat: seatIndexSchema,
   small_blind_seat: seatIndexSchema,
@@ -138,6 +146,18 @@ const roomSettingsSchema = z.strictObject({
   small_blind: safeIntegerSchema,
   big_blind: safeIntegerSchema,
   default_starting_stack: safeIntegerSchema,
+  action_time_ms: safeIntegerSchema.refine(
+    (value) => value >= 5_000 && value <= 120_000,
+  ),
+  timebank_total_ms: safeIntegerSchema.refine(
+    (value) => value >= 0 && value <= 300_000,
+  ),
+  timebank_refill_amount_ms: safeIntegerSchema.refine(
+    (value) => value >= 0 && value <= 300_000,
+  ),
+  timebank_refill_every_hands: safeIntegerSchema.refine(
+    (value) => value >= 1 && value <= 100,
+  ),
   seating_approval_required: z.boolean(),
   stand_up_enabled: z.boolean(),
   stand_up_penalty_per_recipient_chips: safeIntegerSchema
@@ -232,6 +252,7 @@ const roomSchema = z.strictObject({
   room_code: roomCodeSchema,
   status: z.enum(['open', 'hand_in_progress', 'closed']),
   host_guest_id: z.string(),
+  is_paused: z.boolean(),
   settings: roomSettingsSchema,
   members: z.array(memberSchema),
   seats: z.array(seatSchema),
@@ -239,12 +260,51 @@ const roomSchema = z.strictObject({
   stand_up: standUpStateSchema,
 });
 
-export const roomViewSchema = z.strictObject({
-  room: roomSchema,
-  next_hand_number: safeIntegerSchema,
-  active_hand: activeHandSchema.nullable(),
-  last_hand: completedHandSchema.nullable(),
-});
+export const roomViewSchema = z
+  .strictObject({
+    room: roomSchema,
+    next_hand_number: safeIntegerSchema,
+    active_hand: activeHandSchema.nullable(),
+    last_hand: completedHandSchema.nullable(),
+  })
+  .superRefine((snapshot, context) => {
+    const active = snapshot.active_hand;
+    const activeStatus = snapshot.room.status === 'hand_in_progress';
+    if (activeStatus !== (active !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Room status and active hand disagree.',
+      });
+    }
+    if (
+      snapshot.room.is_paused !==
+      (active?.action_deadline_unix_ms === null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Pause state and action deadline disagree.',
+      });
+    }
+    if (active === null) {
+      return;
+    }
+    const settings = snapshot.room.settings;
+    if (
+      settings.timebank_refill_amount_ms > settings.timebank_total_ms ||
+      active.current_actor_timebank_total_ms !== settings.timebank_total_ms ||
+      active.current_actor_timebank_ms >
+        active.current_actor_timebank_total_ms ||
+      active.timebank_refill_amount_ms !== settings.timebank_refill_amount_ms ||
+      (active.timebank_refill_hands_remaining !== null &&
+        active.timebank_refill_hands_remaining >
+          settings.timebank_refill_every_hands)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Timer state and room settings disagree.',
+      });
+    }
+  });
 
 const connectedMessageSchema = z.strictObject({
   type: z.literal('connected'),
