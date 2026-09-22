@@ -3,7 +3,7 @@
 import asyncio
 import json
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Final, cast
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
@@ -19,26 +19,6 @@ router = APIRouter(tags=["realtime"])
 
 MAX_CLIENT_MESSAGE_BYTES: Final = 64 * 1024
 HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
-COMMAND_TYPES: Final = frozenset(
-    {
-        "start_hand",
-        "pause_game",
-        "resume_game",
-        "fold",
-        "check",
-        "call",
-        "bet_to",
-        "raise_to",
-        "request_seat",
-        "approve_seat",
-        "reject_seat",
-        "stand",
-        "leave",
-        "kick",
-        "update_settings",
-        "close_room",
-    }
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +73,12 @@ def _recover_command_id(value: object) -> str | None:
         return None
     normalized = command_id.strip()
     return normalized if 1 <= len(normalized) <= 64 else None
+
+
+def _is_unknown_command(value: object, error: ValidationError) -> bool:
+    if not isinstance(value, dict) or not isinstance(value.get("type"), str):
+        return False
+    return any(item["type"] == "union_tag_invalid" for item in error.errors())
 
 
 async def _send_connection_error(
@@ -182,23 +168,19 @@ async def room_websocket(websocket: WebSocket, room_code: str) -> None:
                 break
 
             command_id = _recover_command_id(raw_command)
-            command_type: Any = raw_command.get("type") if isinstance(raw_command, dict) else None
-            if isinstance(command_type, str) and command_type not in COMMAND_TYPES:
-                coordinator.enqueue_command_error(
-                    session,
-                    command_id=command_id,
-                    code="unknown_command",
-                    message="The command type is unknown.",
-                )
-                continue
             try:
                 command = client_command_adapter.validate_python(raw_command)
-            except ValidationError:
+            except ValidationError as error:
+                unknown_command = _is_unknown_command(raw_command, error)
                 coordinator.enqueue_command_error(
                     session,
                     command_id=command_id,
-                    code="validation_error",
-                    message="The command payload is invalid.",
+                    code="unknown_command" if unknown_command else "validation_error",
+                    message=(
+                        "The command type is unknown."
+                        if unknown_command
+                        else "The command payload is invalid."
+                    ),
                 )
                 continue
             await coordinator.handle_command(session, command)
