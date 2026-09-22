@@ -22,6 +22,8 @@ HANDSHAKE_TIMEOUT_SECONDS: Final = 5.0
 COMMAND_TYPES: Final = frozenset(
     {
         "start_hand",
+        "pause_game",
+        "resume_game",
         "fold",
         "check",
         "call",
