@@ -50,6 +50,7 @@ from streetpoker.application.rooms import (
     RoomSnapshot,
     RoomStatus,
     SettingNotProvided,
+    StackAdjustmentType,
     _PasswordRecord,
     _Room,
     normalize_room_code,
@@ -442,6 +443,35 @@ class RoomService:
         candidate = original.copy()
         candidate.close()
         return self._commit(candidate)
+
+    def adjust_player_stack(
+        self,
+        *,
+        room_id: RoomId,
+        actor: GuestId,
+        target: GuestId,
+        adjustment_type: StackAdjustmentType,
+        amount: int,
+        reason: str | None,
+        command_id: str,
+        expected_next_hand_number: int,
+        expected_ledger_sequence: int,
+    ) -> RoomViewSnapshot:
+        original = self._host_room(room_id, actor)
+        candidate = original.copy()
+        changed = candidate.adjust_stack(
+            actor=actor,
+            target=target,
+            adjustment_type=adjustment_type,
+            amount=amount,
+            reason=reason,
+            command_id=command_id,
+            expected_next_hand_number=expected_next_hand_number,
+            expected_ledger_sequence=expected_ledger_sequence,
+        )
+        if not changed:
+            return self._project_view(original, actor)
+        return self._commit_view(candidate, actor)
 
     def start_hand(
         self,
@@ -897,6 +927,7 @@ class RoomService:
                 ),
             )
         self._settle_stand_up(candidate, active, settlement)
+        candidate.record_completed_hand(set(participant_by_id))
         for player_id in participant_by_id:
             candidate.timebank_balances_ms[player_id] = active.timebank_remaining_ms[player_id]
             candidate.timebank_hands_since_refill[player_id] = min(

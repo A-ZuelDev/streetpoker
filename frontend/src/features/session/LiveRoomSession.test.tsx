@@ -8,6 +8,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AppProviders } from '../../app/providers';
+import { initialStackMaximum } from '../../realtime/protocolLimits';
 import { activeRoomSnapshot, openRoomSnapshot } from '../../test/roomSnapshots';
 import { LiveRoomSession } from './LiveRoomSession';
 
@@ -94,6 +95,33 @@ afterEach(() => {
 });
 
 describe('LiveRoomSession', () => {
+  it('blocks room creation above the six-seat safe stack limit', () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    renderSession();
+    const form = formFor('Create a room');
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Nickname' }), {
+      target: { value: 'Mara' },
+    });
+    fireEvent.change(within(form).getByRole('textbox', { name: 'Room name' }), {
+      target: { value: 'Friday Night' },
+    });
+    const startingStack = within(form).getByRole('spinbutton', {
+      name: 'Starting stack',
+    });
+    expect(startingStack).toHaveAttribute('max', String(initialStackMaximum));
+    fireEvent.change(startingStack, {
+      target: { value: String(initialStackMaximum + 1) },
+    });
+
+    fireEvent.submit(form);
+
+    expect(
+      screen.getByText('The starting stack is above the six-seat safe limit.'),
+    ).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('creates once, reuses the HTTP token for WS, and waits for state freshness', async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

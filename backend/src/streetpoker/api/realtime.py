@@ -13,6 +13,7 @@ from fastapi import WebSocket
 
 from streetpoker.api.guest_identity import derive_guest_id
 from streetpoker.api.schemas.realtime import (
+    AdjustStackCommand,
     ApproveSeatCommand,
     BetToCommand,
     CallCommand,
@@ -58,6 +59,7 @@ from streetpoker.application import (
     InvalidRoomPasswordError,
     InvalidRoomSeatError,
     InvalidRoomSettingsError,
+    InvalidStackAdjustmentError,
     MemberAlreadySeatedError,
     MemberNotFoundError,
     MemberNotSeatedError,
@@ -67,6 +69,7 @@ from streetpoker.application import (
     NotRoomHostError,
     NotRoomMemberError,
     RoomApplicationError,
+    RoomChipLimitError,
     RoomClosedError,
     RoomId,
     RoomMemberStatus,
@@ -78,6 +81,9 @@ from streetpoker.application import (
     RoomSnapshot,
     RoomStatus,
     SeatRequestNotFoundError,
+    StackAdjustmentCommandConflictError,
+    StackAdjustmentTargetError,
+    StackAdjustmentType,
     StaleHandVersionError,
     TurnDeadline,
     WrongRoomPasswordError,
@@ -348,6 +354,15 @@ _SAFE_APPLICATION_ERRORS: dict[type[BaseException], SafeError] = {
     InvalidRoomPasswordError: SafeError("invalid_room_password", "The room password is invalid."),
     InvalidRoomSeatError: SafeError("invalid_seat", "The requested seat is invalid."),
     InvalidRoomSettingsError: SafeError("invalid_settings", "The room settings are invalid."),
+    InvalidStackAdjustmentError: SafeError(
+        "invalid_stack_adjustment", "The stack adjustment is invalid."
+    ),
+    StackAdjustmentTargetError: SafeError(
+        "stack_adjustment_target", "That player does not have a session stack."
+    ),
+    StackAdjustmentCommandConflictError: SafeError(
+        "command_id_conflict", "That stack-adjustment command was already used."
+    ),
     MemberAlreadySeatedError: SafeError("already_seated", "The member is already seated."),
     MemberNotFoundError: SafeError("member_not_found", "The target member was not found."),
     MemberNotSeatedError: SafeError("not_seated", "The member is not seated."),
@@ -362,6 +377,9 @@ _SAFE_APPLICATION_ERRORS: dict[type[BaseException], SafeError] = {
         "seat_already_requested", "That seat already has a request."
     ),
     RoomSeatOccupiedError: SafeError("seat_occupied", "That seat is occupied."),
+    RoomChipLimitError: SafeError(
+        "room_chip_limit", "The room cannot safely assign another starting stack."
+    ),
     SeatRequestNotFoundError: SafeError(
         "seat_request_not_found", "The seat request was not found."
     ),
@@ -1022,6 +1040,18 @@ class RealtimeRoomCoordinator:
                 room_id=session.room_id,
                 actor=session.guest_id,
                 target=GuestId(command.target_guest_id),
+            )
+        elif isinstance(command, AdjustStackCommand):
+            self._room_service.adjust_player_stack(
+                room_id=session.room_id,
+                actor=session.guest_id,
+                target=GuestId(command.target_guest_id),
+                adjustment_type=StackAdjustmentType(command.adjustment_type),
+                amount=command.amount,
+                reason=command.reason,
+                command_id=command.command_id,
+                expected_next_hand_number=command.expected_next_hand_number,
+                expected_ledger_sequence=command.expected_ledger_sequence,
             )
         elif isinstance(command, UpdateSettingsCommand):
             update = self._settings_update(command)

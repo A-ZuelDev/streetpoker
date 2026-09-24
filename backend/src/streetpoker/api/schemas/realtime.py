@@ -6,6 +6,8 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, TypeAdapte
 
 from streetpoker.application import (
     MAX_ACTION_TIME_MS,
+    MAX_ADJUSTMENT_REASON_LENGTH,
+    MAX_CHIP_STACK,
     MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS,
     MAX_TIMEBANK_MS,
     MAX_TIMEBANK_REFILL_EVERY_HANDS,
@@ -19,11 +21,14 @@ from streetpoker.application import (
     CompletedPotSnapshot,
     LegalActionSnapshot,
     MemberSnapshot,
+    PlayerSessionSummarySnapshot,
     RoomSettingsSnapshot,
     RoomSnapshot,
     RoomViewSnapshot,
     SeatRequestSnapshot,
     SeatSnapshot,
+    SessionAccountingSnapshot,
+    StackAdjustmentSnapshot,
     StandUpCancellationSnapshot,
     StandUpParticipantSnapshot,
     StandUpResolutionSnapshot,
@@ -57,6 +62,11 @@ TimebankMilliseconds = Annotated[int, Field(strict=True, ge=0, le=MAX_TIMEBANK_M
 TimebankRefillHands = Annotated[
     int,
     Field(strict=True, ge=1, le=MAX_TIMEBANK_REFILL_EVERY_HANDS),
+]
+AdjustmentAmount = Annotated[int, Field(strict=True, ge=-MAX_CHIP_STACK, le=MAX_CHIP_STACK)]
+AdjustmentReason = Annotated[
+    str,
+    StringConstraints(max_length=MAX_ADJUSTMENT_REASON_LENGTH),
 ]
 
 
@@ -143,6 +153,24 @@ class KickCommand(_Command):
     target_guest_id: GuestIdText
 
 
+class AdjustStackCommand(_Command):
+    type: Literal["adjust_stack"]
+    target_guest_id: GuestIdText
+    adjustment_type: Literal["rebuy", "cash_out", "correction"]
+    amount: AdjustmentAmount
+    reason: AdjustmentReason | None = None
+    expected_next_hand_number: PositiveInt
+    expected_ledger_sequence: NonNegativeInt
+
+    @model_validator(mode="after")
+    def validate_amount_semantics(self) -> AdjustStackCommand:
+        if self.adjustment_type in ("rebuy", "cash_out") and self.amount <= 0:
+            raise ValueError("Rebuy and cash-out amounts must be positive.")
+        if self.adjustment_type == "correction" and self.amount == 0:
+            raise ValueError("A correction must be nonzero.")
+        return self
+
+
 class UpdateSettingsCommand(_Command):
     type: Literal["update_settings"]
     room_name: str | None = None
@@ -202,6 +230,7 @@ ClientCommand = Annotated[
     | StandCommand
     | LeaveCommand
     | KickCommand
+    | AdjustStackCommand
     | UpdateSettingsCommand
     | CloseRoomCommand,
     Field(discriminator="type"),
@@ -346,6 +375,35 @@ class SeatRequestDto(_Outbound):
     seat_index: int
 
 
+class StackAdjustmentDto(_Outbound):
+    sequence: int
+    adjustment_type: str
+    target_nickname: str
+    target_seat_index: int | None
+    delta: int
+    resulting_stack: int
+    initiated_by_host: bool
+    initiator_seat_index: int | None
+    reason: str | None
+
+
+class PlayerSessionSummaryDto(_Outbound):
+    nickname: str
+    seat_index: int | None
+    current_stack: int
+    starting_stack: int
+    external_added: int
+    external_removed: int
+    poker_net: int
+    hands_played: int
+
+
+class SessionAccountingDto(_Outbound):
+    ledger_sequence: int
+    adjustments: list[StackAdjustmentDto]
+    players: list[PlayerSessionSummaryDto]
+
+
 class StandUpParticipantDto(_Outbound):
     seat_index: int
     is_cleared: bool
@@ -401,6 +459,7 @@ class RoomDto(_Outbound):
     seats: list[SeatDto]
     seat_requests: list[SeatRequestDto]
     stand_up: StandUpStateDto
+    session: SessionAccountingDto
 
 
 class RoomViewDto(_Outbound):
@@ -612,6 +671,41 @@ def _seat_request(snapshot: SeatRequestSnapshot) -> SeatRequestDto:
     )
 
 
+def _stack_adjustment(snapshot: StackAdjustmentSnapshot) -> StackAdjustmentDto:
+    return StackAdjustmentDto(
+        sequence=snapshot.sequence,
+        adjustment_type=snapshot.adjustment_type.value,
+        target_nickname=snapshot.target_nickname,
+        target_seat_index=snapshot.target_seat_index,
+        delta=snapshot.delta,
+        resulting_stack=snapshot.resulting_stack,
+        initiated_by_host=snapshot.initiated_by_host,
+        initiator_seat_index=snapshot.initiator_seat_index,
+        reason=snapshot.reason,
+    )
+
+
+def _session_player(snapshot: PlayerSessionSummarySnapshot) -> PlayerSessionSummaryDto:
+    return PlayerSessionSummaryDto(
+        nickname=snapshot.nickname,
+        seat_index=snapshot.seat_index,
+        current_stack=snapshot.current_stack,
+        starting_stack=snapshot.starting_stack,
+        external_added=snapshot.external_added,
+        external_removed=snapshot.external_removed,
+        poker_net=snapshot.poker_net,
+        hands_played=snapshot.hands_played,
+    )
+
+
+def _session(snapshot: SessionAccountingSnapshot) -> SessionAccountingDto:
+    return SessionAccountingDto(
+        ledger_sequence=snapshot.ledger_sequence,
+        adjustments=[_stack_adjustment(entry) for entry in snapshot.adjustments],
+        players=[_session_player(player) for player in snapshot.players],
+    )
+
+
 def _stand_up_participant(snapshot: StandUpParticipantSnapshot) -> StandUpParticipantDto:
     return StandUpParticipantDto(
         seat_index=snapshot.seat_index,
@@ -691,6 +785,7 @@ def _room(snapshot: RoomSnapshot) -> RoomDto:
         seats=[_seat(seat) for seat in snapshot.seats],
         seat_requests=[_seat_request(request) for request in snapshot.seat_requests],
         stand_up=_stand_up_state(snapshot.stand_up),
+        session=_session(snapshot.session),
     )
 
 

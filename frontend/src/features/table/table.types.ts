@@ -122,6 +122,7 @@ export type RoomPendingKind =
   | 'stand'
   | 'leave'
   | 'kick'
+  | 'adjust-stack'
   | 'start-hand'
   | 'pause-game'
   | 'resume-game'
@@ -212,6 +213,33 @@ export interface RoomSettingsView {
   passwordProtected: boolean;
 }
 
+export interface SessionPlayerSummaryView {
+  nickname: string;
+  seatNumber: number | null;
+  currentStack: number;
+  startingStack: number;
+  externalAdded: number;
+  externalRemoved: number;
+  pokerNet: number;
+  handsPlayed: number;
+}
+
+export interface StackAdjustmentView {
+  sequence: number;
+  type: 'rebuy' | 'cash_out' | 'correction';
+  targetNickname: string;
+  targetSeatNumber: number | null;
+  delta: number;
+  resultingStack: number;
+  reason: string | null;
+}
+
+export interface SessionAccountingView {
+  ledgerSequence: number;
+  players: readonly SessionPlayerSummaryView[];
+  adjustments: readonly StackAdjustmentView[];
+}
+
 export interface ChatMessageView {
   id: string;
   sender: string;
@@ -237,6 +265,7 @@ export interface RoomPanelView {
   handInProgress?: boolean;
   standUpActive?: boolean;
   settings?: RoomSettingsView;
+  session?: SessionAccountingView;
 }
 
 export interface TableView {

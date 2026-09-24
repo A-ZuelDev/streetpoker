@@ -466,6 +466,138 @@
   font-size: 0.5rem;
 }
 
+.stack-adjustment {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.stack-adjustment label {
+  display: grid;
+  gap: 0.22rem;
+  color: #aebbb4;
+  font-size: 0.62rem;
+}
+
+.stack-adjustment label small {
+  color: var(--room-text-muted);
+  font-size: 0.5rem;
+}
+
+.stack-adjustment input,
+.stack-adjustment select {
+  width: 100%;
+  min-width: 0;
+  height: 2.15rem;
+  padding: 0.3rem 0.42rem;
+  border: 1px solid var(--line);
+  border-radius: 0.35rem;
+  color: var(--text);
+  background: #090d0b;
+  font: inherit;
+}
+
+.stack-adjustment button {
+  min-height: 2.15rem;
+  border: 1px solid rgb(50 199 133 / 28%);
+  border-radius: 0.35rem;
+  color: #bfead4;
+  background: rgb(50 199 133 / 9%);
+  font-size: 0.62rem;
+  font-weight: 760;
+}
+
+.stack-adjustment__preview {
+  min-height: 1.15rem;
+  margin: 0;
+  color: var(--room-text-muted);
+  font-size: 0.55rem;
+  line-height: 1.4;
+}
+
+.session-accounting {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.session-accounting h3 {
+  margin: 0.25rem 0 0;
+  color: #cbd4cf;
+  font-size: 0.62rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.session-summary,
+.adjustment-history {
+  display: grid;
+  gap: 0.38rem;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.session-summary > li,
+.adjustment-history > li {
+  padding: 0.48rem;
+  border: 1px solid rgb(255 255 255 / 7%);
+  border-radius: 0.42rem;
+  background: rgb(255 255 255 / 2.4%);
+}
+
+.session-summary > li > strong {
+  font-size: 0.66rem;
+}
+
+.session-summary > li > span {
+  float: right;
+  color: var(--room-text-muted);
+  font-size: 0.52rem;
+}
+
+.session-summary dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.25rem 0.5rem;
+  margin: 0.4rem 0 0;
+}
+
+.session-summary dl div,
+.adjustment-history > li > span {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.session-summary dt,
+.session-summary dd {
+  margin: 0;
+  font-size: 0.52rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.session-summary dt {
+  color: var(--room-text-muted);
+}
+
+.adjustment-history > li {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.54rem;
+}
+
+.adjustment-history small {
+  color: var(--room-text-muted);
+  line-height: 1.35;
+}
+
+.is-positive {
+  color: #95d9b7;
+}
+
+.is-negative {
+  color: #e4a6aa;
+}
+
 .room-settings__readonly {
   display: grid;
   gap: 0.3rem;
