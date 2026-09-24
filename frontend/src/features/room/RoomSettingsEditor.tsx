@@ -8,7 +8,10 @@ import {
   timebankRefillHandsMaximum,
   type RoomSettingsPatch,
 } from '../../realtime/roomCommands';
-import { standUpPenaltyPerRecipientMaximum } from '../../realtime/protocolLimits';
+import {
+  initialStackMaximum,
+  standUpPenaltyPerRecipientMaximum,
+} from '../../realtime/protocolLimits';
 import type { RoomSettingsView } from '../table/table.types';
 
 interface RoomSettingsEditorProps {
@@ -141,9 +144,9 @@ export function RoomSettingsEditor({
       setError('The Stand-Up penalty must be a safe positive whole number.');
       return;
     }
-    if (big <= small || stack < big) {
+    if (big <= small || stack < big || stack > initialStackMaximum) {
       setError(
-        'The big blind must exceed the small blind, and the stack must cover it.',
+        'The big blind must exceed the small blind, and the stack must cover it within the safe chip limit.',
       );
       return;
     }
@@ -267,6 +270,7 @@ export function RoomSettingsEditor({
         <input
           type="number"
           min="1"
+          max={initialStackMaximum}
           step="1"
           value={startingStack}
           disabled={disabled || handInProgress}

@@ -57,6 +57,22 @@ export function openRoomSnapshot(roomName = 'Friday Night'): RoomView {
         active_round: null,
         last_result: null,
       },
+      session: {
+        ledger_sequence: 0,
+        adjustments: [],
+        players: [
+          {
+            nickname: 'Alice',
+            seat_index: 1,
+            current_stack: 10_000,
+            starting_stack: 10_000,
+            external_added: 0,
+            external_removed: 0,
+            poker_net: 0,
+            hands_played: 0,
+          },
+        ],
+      },
     },
     next_hand_number: 1,
     active_hand: null,
@@ -112,6 +128,38 @@ export function activeRoomSnapshot(roomName = 'Friday Night'): RoomView {
     { seat_index: 3, guest_id: null, nickname: null, stack: null },
     { seat_index: 4, guest_id: null, nickname: null, stack: null },
     { seat_index: 5, guest_id: null, nickname: null, stack: null },
+  ];
+  snapshot.room.session.players = [
+    {
+      nickname: 'Mara',
+      seat_index: 0,
+      current_stack: 9_850,
+      starting_stack: 10_000,
+      external_added: 0,
+      external_removed: 0,
+      poker_net: -150,
+      hands_played: 0,
+    },
+    {
+      nickname: 'Alice',
+      seat_index: 1,
+      current_stack: 9_900,
+      starting_stack: 10_000,
+      external_added: 0,
+      external_removed: 0,
+      poker_net: -100,
+      hands_played: 0,
+    },
+    {
+      nickname: 'June',
+      seat_index: 2,
+      current_stack: 10_000,
+      starting_stack: 10_000,
+      external_added: 0,
+      external_removed: 0,
+      poker_net: 0,
+      hands_played: 0,
+    },
   ];
   snapshot.active_hand = {
     hand_number: 1,

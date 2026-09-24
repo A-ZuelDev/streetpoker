@@ -16,6 +16,16 @@ const valid = [
   { type: 'stand', command_id: '4' },
   { type: 'leave', command_id: '5' },
   { type: 'kick', command_id: '6', target_guest_id: 'guest_alice' },
+  {
+    type: 'adjust_stack',
+    command_id: 'adjust',
+    target_guest_id: 'guest_alice',
+    adjustment_type: 'rebuy',
+    amount: 500,
+    reason: null,
+    expected_next_hand_number: 1,
+    expected_ledger_sequence: 0,
+  },
   { type: 'start_hand', command_id: '7', hand_number: 1 },
   { type: 'pause_game', command_id: 'pause' },
   { type: 'resume_game', command_id: 'resume' },
@@ -33,6 +43,7 @@ describe('room commands', () => {
     { type: 'request_seat', command_id: 'x' },
     { type: 'approve_seat', command_id: 'x' },
     { type: 'start_hand', command_id: 'x' },
+    { type: 'adjust_stack', command_id: 'x' },
     { type: 'update_settings', command_id: 'x' },
   ])('rejects missing fields for $type', (command) => {
     expect(roomCommandSchema.safeParse(command).success).toBe(false);
@@ -56,6 +67,24 @@ describe('room commands', () => {
     },
     { type: 'kick', command_id: 'x', target_guest_id: '' },
     { type: 'kick', command_id: 'x', target_guest_id: 'x'.repeat(129) },
+    {
+      type: 'adjust_stack',
+      command_id: 'x',
+      target_guest_id: 'guest_alice',
+      adjustment_type: 'rebuy',
+      amount: 0,
+      expected_next_hand_number: 1,
+      expected_ledger_sequence: 0,
+    },
+    {
+      type: 'adjust_stack',
+      command_id: 'x',
+      target_guest_id: 'guest_alice',
+      adjustment_type: 'correction',
+      amount: 0,
+      expected_next_hand_number: 1,
+      expected_ledger_sequence: 0,
+    },
     { type: 'update_settings', command_id: 'x', room_name: null },
     { type: 'update_settings', command_id: 'x', max_seats: 6 },
     { type: 'update_settings', command_id: 'x', room_code: 'ABCDEFGH' },
@@ -194,6 +223,61 @@ describe('room commands', () => {
         commandId: 'resume',
       }),
     ).toEqual({ type: 'resume_game', command_id: 'resume' });
+  });
+
+  it('builds stack adjustments only for the host from authoritative CAS state', () => {
+    const snapshot = openRoomSnapshot();
+    snapshot.next_hand_number = 4;
+    snapshot.room.session.ledger_sequence = 7;
+    expect(
+      buildRoomCommand({
+        snapshot,
+        guestId: 'guest_host',
+        request: {
+          type: 'adjust_stack',
+          targetGuestId: 'guest_alice',
+          adjustmentType: 'cash_out',
+          amount: 250,
+          reason: 'Leaving early',
+        },
+        commandId: 'cash-out',
+      }),
+    ).toEqual({
+      type: 'adjust_stack',
+      command_id: 'cash-out',
+      target_guest_id: 'guest_alice',
+      adjustment_type: 'cash_out',
+      amount: 250,
+      reason: 'Leaving early',
+      expected_next_hand_number: 4,
+      expected_ledger_sequence: 7,
+    });
+    expect(
+      buildRoomCommand({
+        snapshot,
+        guestId: 'guest_alice',
+        request: {
+          type: 'adjust_stack',
+          targetGuestId: 'guest_alice',
+          adjustmentType: 'rebuy',
+          amount: 100,
+        },
+        commandId: 'not-host',
+      }),
+    ).toBeNull();
+    expect(
+      buildRoomCommand({
+        snapshot: activeRoomSnapshot(),
+        guestId: 'guest_host',
+        request: {
+          type: 'adjust_stack',
+          targetGuestId: 'guest_alice',
+          adjustmentType: 'rebuy',
+          amount: 100,
+        },
+        commandId: 'active',
+      }),
+    ).toBeNull();
   });
 
   it('uses request_seat for approval-disabled seating and blocks it during a hand', () => {

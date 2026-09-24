@@ -19,15 +19,20 @@ from streetpoker.application.errors import (
     InvalidRoomSeatError,
     InvalidRoomSettingsError,
     InvalidRoomStateError,
+    InvalidStackAdjustmentError,
     MemberAlreadySeatedError,
     MemberNotFoundError,
     MemberNotSeatedError,
     NotRoomHostError,
     NotRoomMemberError,
+    RoomChipLimitError,
     RoomClosedError,
     RoomSeatAlreadyRequestedError,
     RoomSeatOccupiedError,
     SeatRequestNotFoundError,
+    StackAdjustmentCommandConflictError,
+    StackAdjustmentTargetError,
+    StaleHandVersionError,
 )
 from streetpoker.application.gameplay import _ActiveHand, _CompletedHandRecord
 from streetpoker.domain import (
@@ -66,7 +71,11 @@ DEFAULT_TIMEBANK_REFILL_EVERY_HANDS = 1
 MAX_TIMEBANK_MS = 300_000
 MAX_TIMEBANK_REFILL_EVERY_HANDS = 100
 DEFAULT_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = 100
-MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = 9_007_199_254_740_991 // (SIX_MAX_CAPACITY - 1)
+MAX_SAFE_INTEGER = 9_007_199_254_740_991
+MAX_INITIAL_STACK = MAX_SAFE_INTEGER // SIX_MAX_CAPACITY
+MAX_CHIP_STACK = MAX_SAFE_INTEGER
+MAX_ADJUSTMENT_REASON_LENGTH = 80
+MAX_STAND_UP_PENALTY_PER_RECIPIENT_CHIPS = MAX_SAFE_INTEGER // (SIX_MAX_CAPACITY - 1)
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,6 +113,14 @@ class RoomMemberStatus(StrEnum):
 
     IN_ROOM = "in_room"
     SEATED = "seated"
+
+
+class StackAdjustmentType(StrEnum):
+    """Explicit external stack-change semantics for the session ledger."""
+
+    REBUY = "rebuy"
+    CASH_OUT = "cash_out"
+    CORRECTION = "correction"
 
 
 class SettingNotProvided(Enum):
@@ -168,6 +185,24 @@ def normalize_room_code(value: str) -> str:
     return normalized
 
 
+def normalize_adjustment_reason(value: str | None) -> str | None:
+    """Normalize one optional public ledger reason without accepting control text."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise InvalidStackAdjustmentError("An adjustment reason must be a string.")
+    normalized = " ".join(unicodedata.normalize("NFKC", value).split())
+    if not normalized:
+        return None
+    if len(normalized) > MAX_ADJUSTMENT_REASON_LENGTH:
+        raise InvalidStackAdjustmentError(
+            f"An adjustment reason cannot exceed {MAX_ADJUSTMENT_REASON_LENGTH} characters."
+        )
+    if any(unicodedata.category(character).startswith("C") for character in normalized):
+        raise InvalidStackAdjustmentError("An adjustment reason cannot contain control characters.")
+    return normalized
+
+
 def _strict_positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
@@ -198,9 +233,10 @@ class RoomSettings:
         if (
             not _strict_positive_int(self.default_starting_stack)
             or self.default_starting_stack < self.big_blind
+            or self.default_starting_stack > MAX_INITIAL_STACK
         ):
             raise InvalidRoomSettingsError(
-                "The default starting stack must be at least the big blind."
+                "The default starting stack must be at least the big blind and six-max safe."
             )
         if (
             not _strict_positive_int(self.action_time_ms)
@@ -302,6 +338,38 @@ class _SeatRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class _SessionAccount:
+    starting_stack: int
+    external_added: int = 0
+    external_removed: int = 0
+    hands_played: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _StackAdjustmentLedgerEntry:
+    sequence: int
+    adjustment_type: StackAdjustmentType
+    target_nickname: str
+    target_seat_index: int | None
+    delta: int
+    resulting_stack: int
+    initiated_by_host: bool
+    initiator_seat_index: int | None
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _StackAdjustmentReceipt:
+    target_guest_id: GuestId
+    adjustment_type: StackAdjustmentType
+    amount: int
+    reason: str | None
+    expected_next_hand_number: int
+    expected_ledger_sequence: int
+    ledger_sequence: int
+
+
+@dataclass(frozen=True, slots=True)
 class RoomSettingsSnapshot:
     """Public immutable settings without password verification material."""
 
@@ -348,6 +416,44 @@ class SeatRequestSnapshot:
     guest_id: GuestId
     nickname: str
     seat_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class StackAdjustmentSnapshot:
+    """One immutable public adjustment entry without internal identity values."""
+
+    sequence: int
+    adjustment_type: StackAdjustmentType
+    target_nickname: str
+    target_seat_index: int | None
+    delta: int
+    resulting_stack: int
+    initiated_by_host: bool
+    initiator_seat_index: int | None
+    reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PlayerSessionSummarySnapshot:
+    """Public per-player session accounting derived from current state."""
+
+    nickname: str
+    seat_index: int | None
+    current_stack: int
+    starting_stack: int
+    external_added: int
+    external_removed: int
+    poker_net: int
+    hands_played: int
+
+
+@dataclass(frozen=True, slots=True)
+class SessionAccountingSnapshot:
+    """Room-local adjustment history and current session summaries."""
+
+    ledger_sequence: int
+    adjustments: tuple[StackAdjustmentSnapshot, ...]
+    players: tuple[PlayerSessionSummarySnapshot, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +533,7 @@ class RoomSnapshot:
     seats: tuple[SeatSnapshot, ...]
     seat_requests: tuple[SeatRequestSnapshot, ...]
     stand_up: StandUpStateSnapshot
+    session: SessionAccountingSnapshot
 
 
 class _Room:
@@ -439,13 +546,17 @@ class _Room:
         "last_hand",
         "last_stand_up_result",
         "members",
+        "next_adjustment_sequence",
         "next_hand_number",
         "next_join_order",
         "password_record",
         "room_code",
         "room_id",
         "seat_requests",
+        "session_accounts",
         "settings",
+        "stack_adjustment_ledger",
+        "stack_adjustment_receipts",
         "stand_up_round",
         "status",
         "table",
@@ -478,6 +589,10 @@ class _Room:
         self.stand_up_round: StandUpRound | None = None
         self.last_stand_up_result: StandUpResolution | StandUpCancellation | None = None
         self.next_hand_number = 1
+        self.next_adjustment_sequence = 1
+        self.session_accounts: dict[PlayerId, _SessionAccount] = {}
+        self.stack_adjustment_ledger: tuple[_StackAdjustmentLedgerEntry, ...] = ()
+        self.stack_adjustment_receipts: dict[tuple[GuestId, str], _StackAdjustmentReceipt] = {}
         self.timebank_balances_ms: dict[PlayerId, int] = {}
         self.timebank_hands_since_refill: dict[PlayerId, int] = {}
         self.members = {
@@ -510,6 +625,10 @@ class _Room:
         candidate.stand_up_round = self.stand_up_round
         candidate.last_stand_up_result = self.last_stand_up_result
         candidate.next_hand_number = self.next_hand_number
+        candidate.next_adjustment_sequence = self.next_adjustment_sequence
+        candidate.session_accounts = dict(self.session_accounts)
+        candidate.stack_adjustment_ledger = self.stack_adjustment_ledger
+        candidate.stack_adjustment_receipts = dict(self.stack_adjustment_receipts)
         candidate.timebank_balances_ms = self.timebank_balances_ms.copy()
         candidate.timebank_hands_since_refill = self.timebank_hands_since_refill.copy()
         candidate.members = dict(self.members)
@@ -626,6 +745,7 @@ class _Room:
             self._leave_table(member)
         self.seat_requests.pop(actor, None)
         self.members.pop(actor)
+        self.session_accounts.pop(member.player_id, None)
         self.timebank_balances_ms.pop(member.player_id, None)
         self.timebank_hands_since_refill.pop(member.player_id, None)
         self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_LEFT)
@@ -644,6 +764,7 @@ class _Room:
             self._leave_table(member)
         self.seat_requests.pop(target, None)
         self.members.pop(target)
+        self.session_accounts.pop(member.player_id, None)
         self.timebank_balances_ms.pop(member.player_id, None)
         self.timebank_hands_since_refill.pop(member.player_id, None)
         self.cancel_stand_up_for(member.player_id, StandUpCancelReason.PARTICIPANT_KICKED)
@@ -697,6 +818,175 @@ class _Room:
             self.last_stand_up_result = self.stand_up_round.cancel(StandUpCancelReason.ROOM_CLOSED)
             self.stand_up_round = None
         self.status = RoomStatus.CLOSED
+
+    def adjust_stack(
+        self,
+        *,
+        actor: GuestId,
+        target: GuestId,
+        adjustment_type: StackAdjustmentType,
+        amount: int,
+        reason: str | None,
+        command_id: str,
+        expected_next_hand_number: int,
+        expected_ledger_sequence: int,
+    ) -> bool:
+        """Apply one external stack adjustment, returning false for an exact replay."""
+        self.require_host(actor)
+        self.require_not_closed()
+        normalized_command_id = command_id.strip() if isinstance(command_id, str) else ""
+        if not normalized_command_id or len(normalized_command_id) > 64:
+            raise InvalidStackAdjustmentError("A valid command ID is required.")
+        if not isinstance(adjustment_type, StackAdjustmentType):
+            raise InvalidStackAdjustmentError("The adjustment type is invalid.")
+        if not isinstance(amount, int) or isinstance(amount, bool):
+            raise InvalidStackAdjustmentError("An adjustment amount must be an integer.")
+        normalized_reason = normalize_adjustment_reason(reason)
+        proposed_receipt = _StackAdjustmentReceipt(
+            target_guest_id=target,
+            adjustment_type=adjustment_type,
+            amount=amount,
+            reason=normalized_reason,
+            expected_next_hand_number=expected_next_hand_number,
+            expected_ledger_sequence=expected_ledger_sequence,
+            ledger_sequence=0,
+        )
+        receipt_key = (actor, normalized_command_id)
+        existing_receipt = self.stack_adjustment_receipts.get(receipt_key)
+        if existing_receipt is not None:
+            if replace(existing_receipt, ledger_sequence=0) == proposed_receipt:
+                return False
+            raise StackAdjustmentCommandConflictError(
+                "That stack-adjustment command ID was already used."
+            )
+        if self.status is RoomStatus.HAND_IN_PROGRESS or self.active_hand is not None:
+            raise ActiveHandMutationError(operation="adjust a player stack")
+        if self.is_paused:
+            raise InvalidStackAdjustmentError("A paused room cannot adjust player stacks.")
+        if (
+            not isinstance(expected_next_hand_number, int)
+            or isinstance(expected_next_hand_number, bool)
+            or expected_next_hand_number != self.next_hand_number
+            or not isinstance(expected_ledger_sequence, int)
+            or isinstance(expected_ledger_sequence, bool)
+            or expected_ledger_sequence != self.next_adjustment_sequence - 1
+        ):
+            raise StaleHandVersionError("The room accounting state changed.")
+        if adjustment_type in (StackAdjustmentType.REBUY, StackAdjustmentType.CASH_OUT):
+            if amount <= 0:
+                raise InvalidStackAdjustmentError("Rebuy and cash-out amounts must be positive.")
+            delta = amount if adjustment_type is StackAdjustmentType.REBUY else -amount
+        else:
+            if amount == 0:
+                raise InvalidStackAdjustmentError("A correction must be nonzero.")
+            delta = amount
+        if abs(delta) > MAX_CHIP_STACK:
+            raise InvalidStackAdjustmentError("The adjustment amount exceeds the chip limit.")
+        try:
+            member = self.members[target]
+        except KeyError:
+            raise MemberNotFoundError("The adjustment target is not a current member.") from None
+        account = self.session_accounts.get(member.player_id)
+        if account is None:
+            raise StackAdjustmentTargetError(
+                "The adjustment target has not received a session stack."
+            )
+        current_stack, target_seat = self._member_stack_and_seat(member)
+        resulting_stack = current_stack + delta
+        if not 0 <= resulting_stack <= MAX_CHIP_STACK:
+            raise InvalidStackAdjustmentError(
+                "The resulting stack must stay within the safe chip range."
+            )
+        current_total = sum(
+            self._member_stack_and_seat(current)[0]
+            for current in self.members.values()
+            if current.player_id in self.session_accounts
+        )
+        if not 0 <= current_total + delta <= MAX_SAFE_INTEGER:
+            raise InvalidStackAdjustmentError(
+                "The adjustment would exceed the room's safe chip total."
+            )
+        external_added = account.external_added + max(delta, 0)
+        external_removed = account.external_removed + max(-delta, 0)
+        poker_net = resulting_stack - account.starting_stack - (external_added - external_removed)
+        if (
+            external_added > MAX_SAFE_INTEGER
+            or external_removed > MAX_SAFE_INTEGER
+            or abs(poker_net) > MAX_SAFE_INTEGER
+        ):
+            raise InvalidStackAdjustmentError(
+                "The session accounting totals would exceed safe integer bounds."
+            )
+        if member.status is RoomMemberStatus.SEATED:
+            seat_index = self.table.find_player(member.player_id)
+            if seat_index is None:
+                raise InvalidRoomStateError("A seated adjustment target has no table seat.")
+            self.table.leave_seat(player_id=member.player_id)
+            self.table.seat_player(
+                seat_index=seat_index,
+                player_id=member.player_id,
+                stack=ChipStack(resulting_stack),
+                status=(
+                    ParticipationStatus.SITTING_IN
+                    if resulting_stack > 0
+                    else ParticipationStatus.SITTING_OUT
+                ),
+            )
+        else:
+            self.members[target] = replace(member, retained_stack=ChipStack(resulting_stack))
+        self.session_accounts[member.player_id] = replace(
+            account,
+            external_added=external_added,
+            external_removed=external_removed,
+        )
+        initiator = self.members[actor]
+        initiator_seat = self.table.find_player(initiator.player_id)
+        sequence = self.next_adjustment_sequence
+        self.stack_adjustment_ledger += (
+            _StackAdjustmentLedgerEntry(
+                sequence=sequence,
+                adjustment_type=adjustment_type,
+                target_nickname=member.nickname,
+                target_seat_index=None if target_seat is None else target_seat.value,
+                delta=delta,
+                resulting_stack=resulting_stack,
+                initiated_by_host=True,
+                initiator_seat_index=(None if initiator_seat is None else initiator_seat.value),
+                reason=normalized_reason,
+            ),
+        )
+        self.stack_adjustment_receipts[receipt_key] = replace(
+            proposed_receipt,
+            ledger_sequence=sequence,
+        )
+        self.next_adjustment_sequence += 1
+        return True
+
+    def record_completed_hand(self, player_ids: set[PlayerId]) -> None:
+        """Advance per-player hand counts after a reconciled settlement."""
+        for player_id in player_ids:
+            account = self.session_accounts.get(player_id)
+            if account is None:
+                raise InvalidRoomStateError("A hand participant lacks session accounting.")
+            if account.hands_played >= MAX_SAFE_INTEGER:
+                raise InvalidRoomStateError("A session hand count exceeded safe bounds.")
+            self.session_accounts[player_id] = replace(
+                account,
+                hands_played=account.hands_played + 1,
+            )
+
+    def _member_stack_and_seat(self, member: _RoomMember) -> tuple[int, SeatIndex | None]:
+        if member.status is RoomMemberStatus.SEATED:
+            seat_index = self.table.find_player(member.player_id)
+            if seat_index is None:
+                raise InvalidRoomStateError("A seated member has no table seat.")
+            occupant = self.table.seat_at(seat_index).occupant
+            if occupant is None:
+                raise InvalidRoomStateError("A seated member has no table occupant.")
+            return occupant.stack.chips, seat_index
+        if member.retained_stack is None:
+            raise StackAdjustmentTargetError("The member has no session stack.")
+        return member.retained_stack.chips, None
 
     def cancel_stand_up_for(self, player_id: PlayerId, reason: StandUpCancelReason) -> None:
         round_state = self.stand_up_round
@@ -773,6 +1063,49 @@ class _Room:
             result_snapshot = None
         return StandUpStateSnapshot(active_round=active_snapshot, last_result=result_snapshot)
 
+    def _session_snapshot(self) -> SessionAccountingSnapshot:
+        ordered_members = sorted(self.members.values(), key=lambda member: member.join_order)
+        summaries: list[PlayerSessionSummarySnapshot] = []
+        for member in ordered_members:
+            account = self.session_accounts.get(member.player_id)
+            if account is None:
+                continue
+            current_stack, seat_index = self._member_stack_and_seat(member)
+            summaries.append(
+                PlayerSessionSummarySnapshot(
+                    nickname=member.nickname,
+                    seat_index=None if seat_index is None else seat_index.value,
+                    current_stack=current_stack,
+                    starting_stack=account.starting_stack,
+                    external_added=account.external_added,
+                    external_removed=account.external_removed,
+                    poker_net=(
+                        current_stack
+                        - account.starting_stack
+                        - (account.external_added - account.external_removed)
+                    ),
+                    hands_played=account.hands_played,
+                )
+            )
+        return SessionAccountingSnapshot(
+            ledger_sequence=self.next_adjustment_sequence - 1,
+            adjustments=tuple(
+                StackAdjustmentSnapshot(
+                    sequence=entry.sequence,
+                    adjustment_type=entry.adjustment_type,
+                    target_nickname=entry.target_nickname,
+                    target_seat_index=entry.target_seat_index,
+                    delta=entry.delta,
+                    resulting_stack=entry.resulting_stack,
+                    initiated_by_host=entry.initiated_by_host,
+                    initiator_seat_index=entry.initiator_seat_index,
+                    reason=entry.reason,
+                )
+                for entry in self.stack_adjustment_ledger
+            ),
+            players=tuple(summaries),
+        )
+
     def snapshot(self) -> RoomSnapshot:
         player_to_member = {member.player_id: member for member in self.members.values()}
         stack_by_guest: dict[GuestId, int] = {}
@@ -847,6 +1180,7 @@ class _Room:
             seats=tuple(seat_snapshots),
             seat_requests=request_snapshots,
             stand_up=self._stand_up_snapshot(),
+            session=self._session_snapshot(),
         )
 
     def validate(self) -> None:
@@ -870,6 +1204,55 @@ class _Room:
             or self.next_hand_number < 1
         ):
             raise InvalidRoomStateError("The next hand number must be a positive integer.")
+        if (
+            not isinstance(self.next_adjustment_sequence, int)
+            or isinstance(self.next_adjustment_sequence, bool)
+            or not 1 <= self.next_adjustment_sequence <= MAX_SAFE_INTEGER + 1
+        ):
+            raise InvalidRoomStateError("The next adjustment sequence is invalid.")
+        if len(self.stack_adjustment_ledger) != self.next_adjustment_sequence - 1 or any(
+            entry.sequence != sequence
+            for sequence, entry in enumerate(self.stack_adjustment_ledger, start=1)
+        ):
+            raise InvalidRoomStateError("Adjustment ledger sequences must be contiguous.")
+        for entry in self.stack_adjustment_ledger:
+            if (
+                not isinstance(entry, _StackAdjustmentLedgerEntry)
+                or not isinstance(entry.adjustment_type, StackAdjustmentType)
+                or entry.target_nickname != normalize_nickname(entry.target_nickname)
+                or (
+                    entry.target_seat_index is not None
+                    and not 0 <= entry.target_seat_index < SIX_MAX_CAPACITY
+                )
+                or not isinstance(entry.delta, int)
+                or isinstance(entry.delta, bool)
+                or entry.delta == 0
+                or abs(entry.delta) > MAX_CHIP_STACK
+                or not 0 <= entry.resulting_stack <= MAX_CHIP_STACK
+                or entry.initiated_by_host is not True
+                or (
+                    entry.initiator_seat_index is not None
+                    and not 0 <= entry.initiator_seat_index < SIX_MAX_CAPACITY
+                )
+                or entry.reason != normalize_adjustment_reason(entry.reason)
+            ):
+                raise InvalidRoomStateError("The adjustment ledger contains invalid data.")
+        for key, receipt in self.stack_adjustment_receipts.items():
+            actor, command_id = key
+            if (
+                not isinstance(actor, GuestId)
+                or not isinstance(command_id, str)
+                or not command_id
+                or len(command_id) > 64
+                or not isinstance(receipt, _StackAdjustmentReceipt)
+                or not isinstance(receipt.target_guest_id, GuestId)
+                or not isinstance(receipt.adjustment_type, StackAdjustmentType)
+                or not isinstance(receipt.amount, int)
+                or isinstance(receipt.amount, bool)
+                or receipt.reason != normalize_adjustment_reason(receipt.reason)
+                or not 1 <= receipt.ledger_sequence < self.next_adjustment_sequence
+            ):
+                raise InvalidRoomStateError("Stack-adjustment replay state is invalid.")
         if (self.status is RoomStatus.HAND_IN_PROGRESS) != (self.active_hand is not None):
             raise InvalidRoomStateError(
                 "HAND_IN_PROGRESS status must correspond exactly to one active hand."
@@ -922,6 +1305,37 @@ class _Room:
         if len(table_by_player) != self.table.occupied_count:
             raise InvalidRoomStateError("Table occupants must have unique player identities.")
         member_by_player = {member.player_id: member for member in self.members.values()}
+        stack_owning_players = {
+            member.player_id
+            for member in self.members.values()
+            if member.status is RoomMemberStatus.SEATED or member.retained_stack is not None
+        }
+        if set(self.session_accounts) != stack_owning_players:
+            raise InvalidRoomStateError(
+                "Every current session stack requires exactly one accounting baseline."
+            )
+        total_session_chips = 0
+        for player_id, account in self.session_accounts.items():
+            member = member_by_player.get(player_id)
+            if member is None or not isinstance(account, _SessionAccount):
+                raise InvalidRoomStateError("Session accounts must belong to current members.")
+            current_stack, _ = self._member_stack_and_seat(member)
+            poker_net = (
+                current_stack
+                - account.starting_stack
+                - (account.external_added - account.external_removed)
+            )
+            if (
+                not 0 <= account.starting_stack <= MAX_CHIP_STACK
+                or not 0 <= account.external_added <= MAX_SAFE_INTEGER
+                or not 0 <= account.external_removed <= MAX_SAFE_INTEGER
+                or not 0 <= account.hands_played <= MAX_SAFE_INTEGER
+                or abs(poker_net) > MAX_SAFE_INTEGER
+            ):
+                raise InvalidRoomStateError("Session accounting exceeded safe bounds.")
+            total_session_chips += current_stack
+        if total_session_chips > MAX_SAFE_INTEGER:
+            raise InvalidRoomStateError("Room chip totals must remain JavaScript-safe.")
         if not set(self.timebank_balances_ms) <= set(member_by_player) or any(
             not isinstance(value, int)
             or isinstance(value, bool)
@@ -1119,6 +1533,17 @@ class _Room:
             if member.retained_stack is not None
             else ChipStack(self.settings.default_starting_stack)
         )
+        if member.player_id not in self.session_accounts:
+            current_total = sum(
+                self._member_stack_and_seat(current)[0]
+                for current in self.members.values()
+                if current.player_id in self.session_accounts
+            )
+            if current_total + stack.chips > MAX_SAFE_INTEGER:
+                raise RoomChipLimitError(
+                    "The first session stack would exceed the room's safe chip total."
+                )
+            self.session_accounts[member.player_id] = _SessionAccount(starting_stack=stack.chips)
         try:
             self.table.seat_player(
                 seat_index=seat_index,

@@ -9,6 +9,7 @@ import type {
   SessionErrorField,
 } from '../../realtime/sessionError';
 import type { RoomExitState } from '../../realtime/realtimeStore';
+import { initialStackMaximum } from '../../realtime/protocolLimits';
 
 interface RoomEntryProps {
   busy: boolean;
@@ -94,6 +95,10 @@ export function RoomEntry({
       setLocalError(
         'Blinds and starting stack must be positive whole numbers.',
       );
+      return;
+    }
+    if (stack > initialStackMaximum) {
+      setLocalError('The starting stack is above the six-seat safe limit.');
       return;
     }
     if (big <= small || stack < big) {
@@ -264,6 +269,7 @@ export function RoomEntry({
               name="starting-stack"
               type="number"
               min="1"
+              max={initialStackMaximum}
               step="1"
               value={startingStack}
               aria-invalid={fieldError('create', 'settings') !== null}

@@ -158,6 +158,52 @@ describe('serverMessageSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts public session accounting and rejects internal ledger identities', () => {
+    const snapshot = openRoomSnapshot();
+    snapshot.room.session = {
+      ledger_sequence: 1,
+      adjustments: [
+        {
+          sequence: 1,
+          adjustment_type: 'rebuy',
+          target_nickname: 'Alice',
+          target_seat_index: 1,
+          delta: 500,
+          resulting_stack: 10_500,
+          initiated_by_host: true,
+          initiator_seat_index: null,
+          reason: 'Top-up',
+        },
+      ],
+      players: [
+        {
+          nickname: 'Alice',
+          seat_index: 1,
+          current_stack: 10_500,
+          starting_stack: 10_000,
+          external_added: 500,
+          external_removed: 0,
+          poker_net: 0,
+          hands_played: 0,
+        },
+      ],
+    };
+    expect(
+      serverMessageSchema.safeParse({ type: 'state', snapshot }).success,
+    ).toBe(true);
+
+    const privateLedger = structuredClone(snapshot) as unknown as {
+      room: { session: { adjustments: Record<string, unknown>[] } };
+    };
+    privateLedger.room.session.adjustments[0]!.player_id = 'private-player';
+    expect(
+      serverMessageSchema.safeParse({
+        type: 'state',
+        snapshot: privateLedger,
+      }).success,
+    ).toBe(false);
+  });
+
   it.each([
     1.5,
     Number.NaN,

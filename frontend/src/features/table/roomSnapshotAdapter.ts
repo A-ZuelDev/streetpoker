@@ -128,6 +128,7 @@ function roomPendingView(
     stand: 'stand',
     leave: 'leave',
     kick: 'kick',
+    adjust_stack: 'adjust-stack',
     start_hand: 'start-hand',
     pause_game: 'pause-game',
     resume_game: 'resume-game',
@@ -144,6 +145,7 @@ function roomPendingView(
     stand: 'Standing up…',
     leave: 'Leaving room…',
     kick: 'Removing player…',
+    adjust_stack: 'Adjusting stack…',
     start_hand: 'Starting hand…',
     pause_game: 'Pausing game…',
     resume_game: 'Resuming game…',
@@ -475,6 +477,33 @@ export function roomSnapshotToTableView(
           snapshot.room.settings.stand_up_penalty_per_recipient_chips,
         maxSeats: snapshot.room.settings.max_seats,
         passwordProtected: snapshot.room.settings.password_protected,
+      },
+      session: {
+        ledgerSequence: snapshot.room.session.ledger_sequence,
+        players: snapshot.room.session.players.map((player) => ({
+          nickname: player.nickname,
+          seatNumber: player.seat_index === null ? null : player.seat_index + 1,
+          currentStack: player.current_stack,
+          startingStack: player.starting_stack,
+          externalAdded: player.external_added,
+          externalRemoved: player.external_removed,
+          pokerNet: player.poker_net,
+          handsPlayed: player.hands_played,
+        })),
+        adjustments: [...snapshot.room.session.adjustments]
+          .reverse()
+          .map((entry) => ({
+            sequence: entry.sequence,
+            type: entry.adjustment_type,
+            targetNickname: entry.target_nickname,
+            targetSeatNumber:
+              entry.target_seat_index === null
+                ? null
+                : entry.target_seat_index + 1,
+            delta: entry.delta,
+            resultingStack: entry.resulting_stack,
+            reason: entry.reason,
+          })),
       },
     },
     chat: null,

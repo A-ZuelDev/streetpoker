@@ -7,6 +7,7 @@ import type {
   RoomSettingsPatch,
 } from '../../realtime/roomCommands';
 import { RoomSettingsEditor } from './RoomSettingsEditor';
+import { SessionAccounting, StackAdjustmentForm } from './StackAccounting';
 
 interface RoomPanelProps {
   panel: RoomPanelView;
@@ -209,6 +210,35 @@ export function RoomPanel({
               ))}
             </ul>
           </CollapsibleRoomSection>
+
+          {mode === 'live' && panel.isHost && panel.session !== undefined ? (
+            <CollapsibleRoomSection
+              id="stack-adjustment"
+              title="Adjust stack"
+              defaultOpen={false}
+            >
+              <StackAdjustmentForm
+                members={panel.members}
+                disabled={
+                  (panel.controlsDisabled ?? true) ||
+                  (panel.handInProgress ?? false) ||
+                  (panel.isPaused ?? false)
+                }
+                {...(onRoomCommand === undefined ? {} : { onRoomCommand })}
+              />
+            </CollapsibleRoomSection>
+          ) : null}
+
+          {mode === 'live' && panel.session !== undefined ? (
+            <CollapsibleRoomSection
+              id="session-accounting"
+              title="Session ledger"
+              meta={String(panel.session.adjustments.length)}
+              defaultOpen={false}
+            >
+              <SessionAccounting session={panel.session} />
+            </CollapsibleRoomSection>
+          ) : null}
 
           <CollapsibleRoomSection
             key={requestCount === 0 ? 'no-seat-requests' : 'has-seat-requests'}

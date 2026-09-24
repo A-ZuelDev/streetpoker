@@ -190,3 +190,29 @@ Internal PlayerIds never cross the application projection. Same-token reconnect 
 authoritative projection, replaced sockets cannot issue the host command, and disconnect alone
 does not alter a round. Frontend work in this phase is limited to strict Zod compatibility and
 command construction; visible markers, controls, and payout presentation remain Phase 12E.
+
+## Phase 13E.2 session stack accounting
+
+The host may adjust a current member's established session stack only between hands. A rebuy
+or top-up adds a positive external amount, a cash-out removes a positive external amount, and
+a correction applies one explicit nonzero signed amount. The command compares both the next
+hand number and current ledger sequence before mutation. Exact command-ID replays return the
+current projection without appending or applying again; reusing an ID with different input is
+rejected. The room coordinator continues to serialize this operation with every other command.
+
+The first stack assigned to a member becomes that player's session starting stack. Each accepted
+adjustment appends an immutable, monotonically sequenced room-local entry with display nickname,
+seat at the time of adjustment, signed delta, resulting stack, host indicator/seat, and optional
+normalized reason. Public ledger and summary projections never include PlayerId or GuestId.
+Accounts and history are process-local and intentionally have no database persistence.
+
+Session poker net is derived as `current stack - starting stack - external net`, where external
+net is cumulative chips added minus cumulative chips removed. All three adjustment types affect
+external net, so corrections do not masquerade as poker winnings. Poker and Stand-Up settlement
+change the current stack without changing external totals, and each completed Hold'em hand
+increments the participating accounts' hand count.
+
+A full cash-out leaves seat occupancy and membership unchanged, sets the stack to zero, and marks
+the occupant sitting out. A later positive host adjustment restores that occupied seat to sitting
+in. Adjusting a standing member's retained stack keeps them standing. No adjustment silently
+kicks, disconnects, seats, or stands a member.

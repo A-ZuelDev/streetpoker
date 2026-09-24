@@ -191,6 +191,35 @@ const seatRequestSchema = z.strictObject({
   seat_index: seatIndexSchema,
 });
 
+const stackAdjustmentSchema = z.strictObject({
+  sequence: safeIntegerSchema.refine((value) => value >= 1),
+  adjustment_type: z.enum(['rebuy', 'cash_out', 'correction']),
+  target_nickname: z.string(),
+  target_seat_index: seatIndexSchema.nullable(),
+  delta: safeIntegerSchema.refine((value) => value !== 0),
+  resulting_stack: safeIntegerSchema.refine((value) => value >= 0),
+  initiated_by_host: z.boolean(),
+  initiator_seat_index: seatIndexSchema.nullable(),
+  reason: z.string().max(80).nullable(),
+});
+
+const playerSessionSummarySchema = z.strictObject({
+  nickname: z.string(),
+  seat_index: seatIndexSchema.nullable(),
+  current_stack: safeIntegerSchema.refine((value) => value >= 0),
+  starting_stack: safeIntegerSchema.refine((value) => value >= 0),
+  external_added: safeIntegerSchema.refine((value) => value >= 0),
+  external_removed: safeIntegerSchema.refine((value) => value >= 0),
+  poker_net: safeIntegerSchema,
+  hands_played: safeIntegerSchema.refine((value) => value >= 0),
+});
+
+const sessionAccountingSchema = z.strictObject({
+  ledger_sequence: safeIntegerSchema.refine((value) => value >= 0),
+  adjustments: z.array(stackAdjustmentSchema),
+  players: z.array(playerSessionSummarySchema),
+});
+
 const standUpParticipantSchema = z.strictObject({
   seat_index: seatIndexSchema,
   is_cleared: z.boolean(),
@@ -258,6 +287,7 @@ const roomSchema = z.strictObject({
   seats: z.array(seatSchema),
   seat_requests: z.array(seatRequestSchema),
   stand_up: standUpStateSchema,
+  session: sessionAccountingSchema,
 });
 
 export const roomViewSchema = z

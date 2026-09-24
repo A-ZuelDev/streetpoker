@@ -33,6 +33,18 @@ class InvalidRoomSettingsError(RoomValidationError):
     """Raised when complete candidate room settings are inconsistent."""
 
 
+class InvalidStackAdjustmentError(RoomValidationError):
+    """Raised when a host stack adjustment has invalid semantics or bounds."""
+
+
+class StackAdjustmentTargetError(RoomValidationError):
+    """Raised when a stack adjustment target has no session stack."""
+
+
+class StackAdjustmentCommandConflictError(RoomValidationError):
+    """Raised when a stack-adjustment command ID is reused with different input."""
+
+
 class InvalidRoomPasswordError(RoomValidationError):
     """Raised when a supplied room password violates the bounded policy."""
 
@@ -119,6 +131,10 @@ class DuplicateSeatRequestError(SeatingError):
 
 class SeatRequestNotFoundError(SeatingError):
     """Raised when a host targets a member without a pending request."""
+
+
+class RoomChipLimitError(SeatingError):
+    """Raised when assigning a first session stack would exceed the safe room total."""
 
 
 class ActiveHandMutationError(RoomApplicationError):

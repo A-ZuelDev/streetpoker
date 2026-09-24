@@ -1,7 +1,10 @@
 import { z } from 'zod';
 
 import type { RoomView } from './messages';
-import { standUpPenaltyPerRecipientMaximum } from './protocolLimits';
+import {
+  initialStackMaximum,
+  standUpPenaltyPerRecipientMaximum,
+} from './protocolLimits';
 
 const safeIntegerSchema = z
   .number()
@@ -29,6 +32,7 @@ export const actionTimeMinimumMs = 5_000;
 export const actionTimeMaximumMs = 120_000;
 export const timebankMaximumMs = 300_000;
 export const timebankRefillHandsMaximum = 100;
+export const adjustmentReasonMaximum = 80;
 
 export const requestSeatCommandSchema = z.strictObject({
   type: z.literal('request_seat'),
@@ -63,6 +67,34 @@ export const kickCommandSchema = z.strictObject({
   command_id: commandIdSchema,
   target_guest_id: targetGuestIdSchema,
 });
+
+export const adjustStackCommandSchema = z
+  .strictObject({
+    type: z.literal('adjust_stack'),
+    command_id: commandIdSchema,
+    target_guest_id: targetGuestIdSchema,
+    adjustment_type: z.enum(['rebuy', 'cash_out', 'correction']),
+    amount: safeIntegerSchema,
+    reason: z.string().max(adjustmentReasonMaximum).nullable().optional(),
+    expected_next_hand_number: positiveSafeIntegerSchema,
+    expected_ledger_sequence: nonnegativeSafeIntegerSchema,
+  })
+  .superRefine((command, context) => {
+    if (command.adjustment_type !== 'correction' && command.amount <= 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['amount'],
+        message: 'Rebuy and cash-out amounts must be positive.',
+      });
+    }
+    if (command.adjustment_type === 'correction' && command.amount === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['amount'],
+        message: 'A correction must be nonzero.',
+      });
+    }
+  });
 
 export const startHandCommandSchema = z.strictObject({
   type: z.literal('start_hand'),
@@ -102,7 +134,9 @@ export const updateSettingsCommandSchema = z
     room_name: z.string().max(roomNameTransportLimit).optional(),
     small_blind: positiveSafeIntegerSchema.optional(),
     big_blind: positiveSafeIntegerSchema.optional(),
-    default_starting_stack: positiveSafeIntegerSchema.optional(),
+    default_starting_stack: positiveSafeIntegerSchema
+      .refine((value) => value <= initialStackMaximum)
+      .optional(),
     action_time_ms: positiveSafeIntegerSchema
       .refine((value) => value >= actionTimeMinimumMs)
       .refine((value) => value <= actionTimeMaximumMs)
@@ -138,6 +172,7 @@ export const roomCommandSchema = z.discriminatedUnion('type', [
   standCommandSchema,
   leaveCommandSchema,
   kickCommandSchema,
+  adjustStackCommandSchema,
   startHandCommandSchema,
   pauseGameCommandSchema,
   resumeGameCommandSchema,
@@ -157,6 +192,13 @@ export type RoomCommandRequest =
   | {
       readonly type: 'approve_seat' | 'reject_seat' | 'kick';
       readonly targetGuestId: string;
+    }
+  | {
+      readonly type: 'adjust_stack';
+      readonly targetGuestId: string;
+      readonly adjustmentType: 'rebuy' | 'cash_out' | 'correction';
+      readonly amount: number;
+      readonly reason?: string | null;
     }
   | {
       readonly type:
@@ -293,6 +335,29 @@ export function buildRoomCommand(options: {
         target_guest_id: request.targetGuestId,
       });
     }
+    case 'adjust_stack': {
+      const target = room.members.find(
+        (member) => member.guest_id === request.targetGuestId,
+      );
+      if (
+        !isHost ||
+        room.status !== 'open' ||
+        room.is_paused ||
+        target?.stack === null ||
+        target === undefined
+      ) {
+        return null;
+      }
+      return roomCommandSchema.parse({
+        ...common,
+        target_guest_id: request.targetGuestId,
+        adjustment_type: request.adjustmentType,
+        amount: request.amount,
+        reason: request.reason ?? null,
+        expected_next_hand_number: snapshot.next_hand_number,
+        expected_ledger_sequence: room.session.ledger_sequence,
+      });
+    }
     case 'start_hand':
       if (!isHost || room.status !== 'open') {
         return null;
@@ -358,6 +423,10 @@ const safeRoomCommandMessages: Record<string, string> = {
   cannot_start_hand: 'The room could not start a hand.',
   invalid_room_name: 'Enter a valid room name.',
   invalid_settings: 'The room settings are invalid.',
+  invalid_stack_adjustment: 'Enter a valid stack adjustment.',
+  stack_adjustment_target: 'That player does not have a session stack.',
+  room_chip_limit: 'The room cannot safely assign another starting stack.',
+  command_id_conflict: 'That stack adjustment was already submitted.',
   invalid_room_password: 'The room password is invalid.',
   validation_error: 'The room command was rejected.',
   room_not_found: 'The room is no longer available.',

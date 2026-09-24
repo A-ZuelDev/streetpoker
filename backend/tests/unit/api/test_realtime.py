@@ -19,6 +19,7 @@ from streetpoker.api.realtime import (
     safe_error,
 )
 from streetpoker.api.schemas.realtime import (
+    AdjustStackCommand,
     CallCommand,
     CloseRoomCommand,
     CommandAckMessage,
@@ -237,6 +238,16 @@ def test_guest_identity_is_stable_but_does_not_expose_bearer_token() -> None:
         {"type": "stand", "command_id": "10"},
         {"type": "leave", "command_id": "11"},
         {"type": "kick", "command_id": "12", "target_guest_id": "guest_target"},
+        {
+            "type": "adjust_stack",
+            "command_id": "adjust",
+            "target_guest_id": "guest_target",
+            "adjustment_type": "correction",
+            "amount": -100,
+            "reason": "Count correction",
+            "expected_next_hand_number": 1,
+            "expected_ledger_sequence": 0,
+        },
         {"type": "pause_game", "command_id": "pause"},
         {"type": "resume_game", "command_id": "resume"},
         {"type": "update_settings", "command_id": "13", "password": None},
@@ -276,6 +287,33 @@ def test_client_command_union_accepts_only_current_phase_commands(
         {"type": "update_settings", "command_id": "1", "action_time_ms": 120_001},
         {"type": "update_settings", "command_id": "1", "timebank_total_ms": -1},
         {"type": "update_settings", "command_id": "1", "timebank_total_ms": 300_001},
+        {
+            "type": "adjust_stack",
+            "command_id": "1",
+            "target_guest_id": "guest_target",
+            "adjustment_type": "rebuy",
+            "amount": 0,
+            "expected_next_hand_number": 1,
+            "expected_ledger_sequence": 0,
+        },
+        {
+            "type": "adjust_stack",
+            "command_id": "1",
+            "target_guest_id": "guest_target",
+            "adjustment_type": "correction",
+            "amount": 0,
+            "expected_next_hand_number": 1,
+            "expected_ledger_sequence": 0,
+        },
+        {
+            "type": "adjust_stack",
+            "command_id": "1",
+            "target_guest_id": "guest_target",
+            "adjustment_type": "cash_out",
+            "amount": 1,
+            "expected_next_hand_number": 0,
+            "expected_ledger_sequence": 0,
+        },
         {
             "type": "update_settings",
             "command_id": "1",
@@ -825,6 +863,47 @@ def test_send_failure_does_not_rollback_committed_room_command() -> None:
         await asyncio.sleep(0)
 
         assert service.get_room_snapshot(room_id).seats[1].guest_id == guests["host"]
+        await coordinator.disconnect(session)
+
+    asyncio.run(scenario())
+
+
+def test_realtime_stack_adjustment_dispatch_is_serialized_and_replay_safe() -> None:
+    async def scenario() -> None:
+        service, room_id, guests = built_service()
+        room_code = service.get_room_snapshot(room_id).room_code
+        service.join_room(room_code=room_code, actor=guests["alice"], nickname="Alice")
+        service.request_seat(room_id=room_id, actor=guests["alice"], seat_index=2)
+        registry = ConnectionRegistry()
+        coordinator = RealtimeRoomCoordinator(service, registry=registry)
+        fake = RecordingWebSocket()
+        session = registry.register(cast(WebSocket, fake), room_id, guests["host"])
+        command = AdjustStackCommand(
+            type="adjust_stack",
+            command_id="top-up",
+            target_guest_id=guests["alice"].value,
+            adjustment_type="rebuy",
+            amount=500,
+            reason="More chips",
+            expected_next_hand_number=1,
+            expected_ledger_sequence=0,
+        )
+
+        await coordinator.handle_command(session, command)
+        await coordinator.handle_command(session, command)
+        await asyncio.sleep(0)
+
+        snapshot = service.get_room_snapshot(room_id)
+        assert snapshot.session.ledger_sequence == 1
+        assert len(snapshot.session.adjustments) == 1
+        assert (
+            next(member for member in snapshot.members if member.guest_id == guests["alice"]).stack
+            == 1_500
+        )
+        acknowledgements = [
+            item for item in fake.sent if cast(dict[str, object], item).get("type") == "command_ack"
+        ]
+        assert len(acknowledgements) == 2
         await coordinator.disconnect(session)
 
     asyncio.run(scenario())

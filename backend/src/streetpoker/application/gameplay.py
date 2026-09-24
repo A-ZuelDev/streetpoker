@@ -402,6 +402,10 @@ def project_current_room_snapshot(
         )
         for participant in active_hand.hand.snapshot.participants
     }
+    live_stack_by_seat = {
+        participant.seat_index.value: participant.current_stack.chips
+        for participant in active_hand.hand.snapshot.participants
+    }
 
     def current_stack(guest_id: GuestId | None, existing: int | None) -> int | None:
         if guest_id is None:
@@ -424,6 +428,24 @@ def project_current_room_snapshot(
                 stack=current_stack(seat.guest_id, seat.stack),
             )
             for seat in room_snapshot.seats
+        ),
+        session=replace(
+            room_snapshot.session,
+            players=tuple(
+                replace(
+                    player,
+                    current_stack=live_stack,
+                    poker_net=(
+                        live_stack
+                        - player.starting_stack
+                        - (player.external_added - player.external_removed)
+                    ),
+                )
+                if player.seat_index is not None
+                and (live_stack := live_stack_by_seat.get(player.seat_index)) is not None
+                else player
+                for player in room_snapshot.session.players
+            ),
         ),
     )
 
